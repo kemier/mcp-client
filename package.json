@@ -1,0 +1,105 @@
+{
+  "name": "mcp-client",
+  "displayName": "mcp-client",
+  "description": "",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:mcpClient.startChat"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^16.x.x",
+    "@types/vscode": "^1.99.1",
+    "@typescript-eslint/eslint-plugin": "^6.x.x",
+    "@typescript-eslint/parser": "^6.x.x",
+    "eslint": "^8.x.x",
+    "mocha": "^10.2.0",
+    "typescript": "^5.x.x"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "mcpClient.startChat",
+        "title": "MCP Client: Start Chat"
+      },
+      {
+        "command": "mcpConfig.diagnoseServer",
+        "title": "MCP: 诊断服务器连接",
+        "category": "MCP Config"
+      }
+    ],
+    "configuration": {
+      "title": "MCP Config Assistant",
+      "properties": {
+        "mcpClient.servers": {
+          "type": "object",
+          "description": "服务器配置",
+          "default": {
+            "default": {
+              "type": "stdio",
+              "command": "uvx",
+              "args": [
+                "--from",
+                "llm-context",
+                "lc-mcp"
+              ],
+              "shell": true,
+              "windowsHide": true
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "type",
+              "command"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "stdio"
+                ],
+                "description": "服务器类型"
+              },
+              "command": {
+                "type": "string",
+                "description": "执行命令"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "命令参数"
+              },
+              "shell": {
+                "type": "boolean",
+                "default": true,
+                "description": "在 Windows 上是否使用 shell 执行命令"
+              },
+              "windowsHide": {
+                "type": "boolean",
+                "default": true,
+                "description": "在 Windows 上是否隐藏命令提示符窗口"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
