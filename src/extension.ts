@@ -1,409 +1,397 @@
 // Import necessary modules
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
-import { CommandManager } from './commands/CommandManager';
-import { LogManager } from './utils/LogManager';
-import { ServerManager } from './services/McpServerManager';
-import { ServerStatusEvent } from './models/Types';
-import { StdioServer, IServer } from './services/StdioServer';
+// import { CommandManager } from './commands/CommandManager'; // CommandManager might not be needed now
+import { McpServerManager } from './services/McpServerManager';
+import { ServerStatusEvent, ServerConfig } from './models/Types';
+// import { StdioServer, IServer } from './services/StdioServer'; // Not directly used in extension.ts now
+// import { getWebviewContent } from './panels/webview/chatWebview'; // Handled by Provider
+import { ConfigStorage } from './services/ConfigStorage';
+// Import new logger utility
+import { initializeLogger, logDebug, logError, logInfo, logWarning, getErrorMessage } from './utils/logger';
+// Import the new webview provider
+import { ChatWebviewProvider } from './panels/chatWebviewProvider';
 
-// Global variable to track the chat panel and chat history
-let chatPanel: vscode.WebviewPanel | undefined = undefined;
-let chatHistory: { role: string; text: string }[] = []; // Array to store chat history
+// Export logger functions if needed by other modules directly
+// (Alternatively, they can import directly from './utils/logger')
+export { logDebug, logError, logInfo, logWarning, getErrorMessage };
+
+// Global variables previously related to chat panel are removed:
+// let chatPanel: vscode.WebviewPanel | undefined = undefined;
+// let chatHistory: { role: string; text: string }[] = [];
+// const serverAbilities = new Map<string, any[]>(); -> Managed by ChatWebviewProvider now
+
+// Flag to track if extension is activated
+let isExtensionActivated = false;
+
+// Global instance of the server manager (still needed)
+let serverManager: McpServerManager;
+
+// Store a reference to the extension context (still needed)
+let extensionContext: vscode.ExtensionContext;
+export { extensionContext };
+
+// Global instance of the webview provider
+let chatWebviewProvider: ChatWebviewProvider;
+
+// --- Helper functions still needed in extension.ts --- 
+
+// Utility for env vars formatting (keep here or move to utils?)
+function formatEnvironmentVariables(input: string): string {
+    if (!input.trim()) return '{}';
+    if (!input.trim().startsWith('{')) {
+        const parts = input.split(':', 2);
+        if (parts.length === 2) return `{"${parts[0].trim()}":"${parts[1].trim()}"}`;
+        if (!input.includes(':') && !input.includes('{') && !input.includes('}')) return `{"GITHUB_TOKEN":"${input.trim()}"}`;
+        return `{${input}}`;
+    }
+    return input;
+}
+
+// Command cleanup helper
+async function cleanupExistingCommands() {
+    try {
+        const allCommands = await vscode.commands.getCommands();
+        const ourCommands = [
+            'mcpClient.startChat',
+            'mcpClient.addServer',
+            'mcpClient.configureServer',
+            'mcpClient.deleteCurrentServer', // Added based on previous code
+            'mcpClient.deleteGithubServer', // Added based on previous code
+            'mcpClient.deleteServerByName', // Added based on previous code
+             'mcpClient.executeDeleteServer' // New command for provider interaction
+        ];
+        logDebug(`[Extension] Checking for existing commands: ${ourCommands.join(', ')}`);
+        for (const cmd of ourCommands) {
+            if (allCommands.includes(cmd)) {
+                logWarning(`[Extension] Command potentially already exists: ${cmd}. Registration might overwrite or fail silently.`);
+            }
+        }
+    } catch (error: unknown) {
+        logError(`[Extension] Error checking commands: ${getErrorMessage(error)}`);
+    }
+}
+
 
 // Activate function
 export async function activate(context: vscode.ExtensionContext) {
-    // *** ADD THIS VERY FIRST LINE ***
-    console.log('>>> activate function started'); 
-
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "mcp-client" is now active!');
-
-    // 初始化日志管理器
-    try {
-        LogManager.initialize(context.extensionPath);
-        
-        // 记录更详细的激活信息
-        const extensionInfo = {
-            name: 'MCP Config Assistant',
-            version: '0.0.1',
-            env: process.env.NODE_ENV || 'development',
-            platform: process.platform,
-            nodeVersion: process.version
-        };
-        
-        LogManager.info('Extension', '扩展激活', extensionInfo);
-    } catch (error) {
-        console.error('日志系统初始化失败:', error);
-        vscode.window.showErrorMessage('日志系统初始化失败，请检查权限和磁盘空间。');
+    extensionContext = context;
+    if (isExtensionActivated) {
+        console.log('MCP Client extension already activated, skipping activation');
+        return;
     }
-    
-    console.log('>>> Extension activated: mcp-client');
-    
-    // 注册命令
-    const commandManager = new CommandManager(context);
-    commandManager.registerCommands();
+    console.log('Activating MCP Client extension...');
+    initializeLogger(context);
+    logInfo("--- MCP Client Activation Sequence Start ---");
+    logInfo('>>> activate function started');
+    logInfo('Congratulations, your extension "mcp-client" is now active!');
 
-    // 监听配置变化
+    await cleanupExistingCommands();
+
+    // Initialize core services
+    const configStorage = ConfigStorage.getInstance(context);
+    logInfo('[Extension] Configuration storage initialized');
+    serverManager = McpServerManager.getInstance();
+    logInfo('[Extension] Server manager initialized');
+
+    // Initialize the Webview Provider (Pass dependencies)
+    chatWebviewProvider = new ChatWebviewProvider(context, serverManager, configStorage);
+    context.subscriptions.push(chatWebviewProvider); // Add provider to subscriptions for disposal
+    logInfo('[Extension] ChatWebviewProvider initialized');
+
+    // --- Auto-start configured servers --- 
+    try {
+        logInfo("[Activate] Starting background process to ensure all configured servers are started...");
+        const serverNames = configStorage.getServerNames();
+        logInfo(`[Activate] Found configured servers: ${serverNames.join(', ') || 'None'}`);
+        for (const serverName of serverNames) {
+            (async () => { 
+                try {
+                    logInfo(`[Activate Background] Ensuring server '${serverName}' is started...`);
+                    const config = configStorage.getServer(serverName);
+                    if (config) {
+                        serverManager.setDynamicConfig(serverName, config);
+                        await serverManager.ensureServerStarted(serverName); 
+                        logInfo(`[Activate Background] Successfully ensured server '${serverName}'.`);
+                    } else {
+                        logWarning(`[Activate Background] No config found for '${serverName}'.`);
+                    }
+                } catch (error) {
+                    logError(`[Activate Background] Failed to start server '${serverName}': ${getErrorMessage(error)}`);
+                }
+            })(); 
+        }
+        logInfo("[Activate] Background server startup process initiated."); 
+    } catch (error) {
+        logError(`[Activate] Error initiating auto-start: ${getErrorMessage(error)}`);
+    }
+    // --- End Auto-start ---
+
+    // --- Set up server status listener FOR ABILITIES (Provider also listens) --- 
+    // We might need to pass abilities TO the provider if fetched here.
+    // Alternative: Provider handles fetching AND storage entirely.
+    // Let's assume the provider handles ability fetching based on its own status listener for now.
+    /* // Remove direct ability handling from activate? Provider does this now.
+    try {
+        serverManager.on('status', async (event: ServerStatusEvent) => {
+            logDebug(`[Activate Status Listener] Event: ${event.serverId} -> ${event.status}`);
+            // If the provider needs abilities fetched here, we could call a method on it:
+            // if (event.status === 'connected') {
+            //     chatWebviewProvider.fetchAbilitiesForServer(event.serverId);
+            // }
+             // Provider handles its own status updates and ability fetching internally
+        });
+    } catch (error: unknown) {
+        logError(`[Extension] Error setting up central status listener: ${getErrorMessage(error)}`);
+    }
+    */
+
+    // --- Register Commands --- 
+    logInfo('[Extension] Registering commands...');
+
+    // Command to open the chat panel (now calls the provider)
+    try {
+        context.subscriptions.push(vscode.commands.registerCommand('mcpClient.startChat', () => {
+            logInfo('[Extension] Command executed: mcpClient.startChat');
+            chatWebviewProvider.showPanel(); // Delegate to provider
+        }));
+        logInfo('[Extension] Registered command: mcpClient.startChat');
+    } catch (error: unknown) {
+        logError(`[Extension] Failed to register mcpClient.startChat: ${getErrorMessage(error)}`);
+    }
+
+    // Command to add a new server configuration
+    try {
+        const addServerDisposable = vscode.commands.registerCommand('mcpClient.addServer', async () => {
+            logInfo('[Extension] Command executed: mcpClient.addServer');
+            
+            const serverName = await vscode.window.showInputBox({ prompt: 'Enter server name', placeHolder: 'e.g., echo', ignoreFocusOut: true });
+            if (!serverName) return;
+
+            const command = await vscode.window.showInputBox({ prompt: 'Enter command to run MCP server', placeHolder: 'e.g., npx', ignoreFocusOut: true });
+            if (!command) return;
+
+            const args = await vscode.window.showInputBox({ prompt: 'Enter command arguments (comma separated)', placeHolder: 'e.g., -y, @modelcontextprotocol/server-echo', ignoreFocusOut: true });
+            if (args === undefined) return; // Check for undefined in case user escapes
+
+            const envVars = await vscode.window.showInputBox({ prompt: 'Enter environment variables (JSON format)', placeHolder: 'e.g., {"GITHUB_TOKEN":"ghp_123abc"}', ignoreFocusOut: true });
+            let parsedEnv: Record<string, string> = {};
+            if (envVars) {
+                try {
+                    const formattedEnvVars = formatEnvironmentVariables(envVars);
+                    parsedEnv = JSON.parse(formattedEnvVars);
+                    // Validate values are strings
+                    for (const key in parsedEnv) {
+                        if (typeof parsedEnv[key] !== 'string') parsedEnv[key] = String(parsedEnv[key]);
+                    }
+                    vscode.window.showInformationMessage('Environment variables parsed successfully.');
+                 } catch (jsonError) {
+                     const errorMsg = getErrorMessage(jsonError);
+                     logError(`Failed to parse env vars: ${errorMsg}`);
+                     vscode.window.showErrorMessage(`Invalid JSON for environment variables: ${errorMsg}. Please use {"KEY":"VALUE"} format.`);
+                     // Optionally re-prompt or return
+                     return; // Stop if env vars are invalid
+                 }
+            }
+
+            const useShell = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Use shell for execution?', ignoreFocusOut: true });
+            if (!useShell) return;
+
+            const windowsHide = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Hide window on Windows?', ignoreFocusOut: true });
+            if (!windowsHide) return;
+
+            // Heartbeat option removed based on StdioServer capabilities
+            // const heartbeat = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Use heartbeat?', ignoreFocusOut: true });
+            // if (!heartbeat) return;
+
+            const serverConfig: ServerConfig = {
+                type: 'stdio',
+                command,
+                args: args.split(',').map(arg => arg.trim()),
+                shell: useShell === 'Yes',
+                windowsHide: windowsHide === 'Yes',
+                env: parsedEnv
+                // heartbeatEnabled: heartbeat === 'Yes' // Heartbeat likely managed by server implementation
+            };
+
+            await configStorage.addServer(serverName, serverConfig);
+            serverManager.setDynamicConfig(serverName, serverConfig); // Inform manager immediately
+            vscode.window.showInformationMessage(`Server ${serverName} added successfully`);
+
+            // Update WebView via provider IF the panel is open
+            chatWebviewProvider.updateWebviewServerList(); // Add a public method to provider
+
+        });
+        context.subscriptions.push(addServerDisposable);
+        logInfo('[Extension] Registered command: mcpClient.addServer');
+    } catch (error: unknown) {
+        logError(`[Extension] Failed to register mcpClient.addServer: ${getErrorMessage(error)}`);
+    }
+
+    // Command to list and select a server to configure (simplified - just sets config)
+    try {
+        const configureServerDisposable = vscode.commands.registerCommand('mcpClient.configureServer', async () => {
+            logInfo('[Extension] Command executed: mcpClient.configureServer');
+            const serverNames = configStorage.getServerNames();
+            if (serverNames.length === 0) {
+                const addNew = await vscode.window.showInformationMessage('No servers found. Add one?', 'Yes', 'No');
+                if (addNew === 'Yes') await vscode.commands.executeCommand('mcpClient.addServer');
+                return;
+            }
+            const selectedServer = await vscode.window.showQuickPick([...serverNames, '+ Add New Server'], { placeHolder: 'Select a server to configure or add new', ignoreFocusOut: true });
+            if (!selectedServer) return;
+            if (selectedServer === '+ Add New Server') {
+                await vscode.commands.executeCommand('mcpClient.addServer');
+                return;
+            }
+            try {
+                const config = configStorage.getServer(selectedServer);
+                if (!config) throw new Error(`Config for "${selectedServer}" not found.`);
+                serverManager.setDynamicConfig(selectedServer, config); // Ensure manager has config
+                vscode.window.showInformationMessage(`Server "${selectedServer}" configuration loaded for use.`);
+                logInfo(`[Extension] Server "${selectedServer}" config loaded.`);
+                 // No direct action needed beyond loading config into manager? 
+                 // Perhaps ensure it's started?
+                await serverManager.ensureServerStarted(selectedServer); 
+                chatWebviewProvider.updateWebviewServerList(); // Update UI
+            } catch (error: any) {
+                const errorMsg = getErrorMessage(error);
+                logError(`[Extension] Failed to configure server "${selectedServer}": ${errorMsg}`);
+                vscode.window.showErrorMessage(`Failed to configure server "${selectedServer}": ${errorMsg}`);
+            }
+        });
+        context.subscriptions.push(configureServerDisposable);
+        logInfo('[Extension] Registered command: mcpClient.configureServer');
+    } catch (error: unknown) {
+        logError(`[Extension] Failed to register mcpClient.configureServer: ${getErrorMessage(error)}`);
+    }
+
+    // --- Server Deletion Command --- 
+    // New command that handles the full deletion logic, callable by provider
+    try {
+        const executeDeleteServerDisposable = vscode.commands.registerCommand('mcpClient.executeDeleteServer', async (serverId: string) => {
+            logInfo(`[Extension] Command executed: mcpClient.executeDeleteServer for ID: ${serverId}`);
+            if (!serverId) {
+                logError('[executeDeleteServer] No server ID provided.');
+                vscode.window.showErrorMessage('Cannot delete server: No server ID specified.');
+                return;
+            }
+            
+            // Optional: Double-check confirmation (though provider might do this)
+            // const confirmation = await vscode.window.showWarningMessage(...);
+            // if (confirmation !== 'Delete') return;
+            
+            logDebug(`[executeDeleteServer] Starting deletion process for: ${serverId}`);
+            try {
+                // 1. Stop the server process via manager
+                if (serverManager.hasServer(serverId)) {
+                    logDebug(`[executeDeleteServer] Stopping server process: ${serverId}`);
+                    await serverManager.stopServer(serverId);
+                    logInfo(`[executeDeleteServer] Stopped server process: ${serverId}`);
+                }
+                // 2. Remove configuration from manager (redundant if stopServer does it, but safe)
+                await serverManager.removeServerConfiguration(serverId);
+                logInfo(`[executeDeleteServer] Removed config from ServerManager for: ${serverId}`);
+
+                // 3. Remove from persistent storage
+                await configStorage.removeServer(serverId);
+                logInfo(`[executeDeleteServer] Removed config from ConfigStorage for: ${serverId}`);
+
+                // 4. Notify provider/webview to update UI
+                chatWebviewProvider.handleServerRemoved(serverId); // Add method to provider
+
+                vscode.window.showInformationMessage(`Server "${serverId}" has been deleted.`);
+                logInfo(`[executeDeleteServer] Deletion completed successfully for: ${serverId}`);
+
+            } catch (error) {
+                const errorMsg = getErrorMessage(error);
+                logError(`[executeDeleteServer] Error deleting server ${serverId}: ${errorMsg}`);
+                vscode.window.showErrorMessage(`Failed to delete server ${serverId}: ${errorMsg}`);
+                 // Notify provider of failure?
+                 chatWebviewProvider.handleServerDeletionError(serverId, errorMsg);
+            }
+        });
+        context.subscriptions.push(executeDeleteServerDisposable);
+        logInfo('[Extension] Registered command: mcpClient.executeDeleteServer');
+
+    } catch (error: unknown) { 
+        logError(`[Extension] Failed to register mcpClient.executeDeleteServer: ${getErrorMessage(error)}`);
+    }
+
+    // Command to *trigger* deletion via quick pick (calls the execute command)
+    try {
+        const deleteServerByNameDisposable = vscode.commands.registerCommand('mcpClient.deleteServerByName', async () => {
+            logInfo('[Extension] Command executed: mcpClient.deleteServerByName');
+            const serverNames = configStorage.getServerNames();
+            if (serverNames.length === 0) {
+                vscode.window.showInformationMessage('No servers available to delete.');
+                return;
+            }
+            const selectedServer = await vscode.window.showQuickPick(serverNames, { placeHolder: 'Select a server to delete', ignoreFocusOut: true });
+            if (!selectedServer) return; // User cancelled
+
+            const confirmation = await vscode.window.showWarningMessage(`Are you sure you want to delete "${selectedServer}"?`, { modal: true }, 'Delete', 'Cancel');
+            if (confirmation !== 'Delete') return;
+
+            // Execute the actual deletion command
+            await vscode.commands.executeCommand('mcpClient.executeDeleteServer', selectedServer);
+        });
+        context.subscriptions.push(deleteServerByNameDisposable);
+        logInfo('[Extension] Registered command: mcpClient.deleteServerByName');
+    } catch (error: unknown) {
+        logError(`[Extension] Failed to register mcpClient.deleteServerByName: ${getErrorMessage(error)}`);
+    }
+
+    // Remove older/specific deletion commands if executeDeleteServer covers all cases
+     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.deleteCurrentServer', ...));
+     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.deleteGithubServer', ...));
+     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.removeServer', ...)); // May be redundant
+
+
+    // Monitor configuration changes (optional, provider might handle UI updates)
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('mcpClient')) {
-                console.log('Configuration changed');
-                const newConfig = vscode.workspace.getConfiguration('mcpClient');
-                console.log('New configuration:', newConfig);
+                logInfo('[Extension] Configuration changed (mcpClient section affected).');
+                // Potentially trigger a refresh in the provider
+                chatWebviewProvider.handleConfigChange(); // Add method to provider
             }
         })
     );
 
-    // 注册清理函数
+    // Register cleanup function
     context.subscriptions.push({
         dispose: () => {
-            ServerManager.getInstance().dispose();
+            logInfo('[Extension] Disposing extension resources.');
+            // Provider disposal is handled by adding it to subscriptions
+            if (McpServerManager.getInstance) {
+                McpServerManager.getInstance().dispose();
+            }
         }
     });
 
-    try {
-        const serverManager = ServerManager.getInstance();
-
-        // 监听服务器状态变化
-        serverManager.on('status', (event: ServerStatusEvent) => {
-            LogManager.info('Extension', `服务器状态变更: ${event.status}`, {
-                serverId: event.serverId,
-                pid: event.pid,
-                error: event.error
-            });
-        });
-
-        // 启动服务器
-        serverManager.startServer().catch(error => {
-            // Log the error if background startup fails, but don't block activation
-            LogManager.error('Extension', '后台启动服务器失败', error);
-            vscode.window.showErrorMessage('后台启动 MCP 服务器失败，请查看日志。');
-        });
-        
-    } catch (error) {
-        LogManager.error('Extension', '扩展激活失败', error);
-        vscode.window.showErrorMessage('扩展激活失败，请查看日志了解详情。');
-    }
+    logInfo('[Extension] MCP Client extension activation completed.');
+    isExtensionActivated = true;
 }
 
 // Deactivate function
 export function deactivate() {
-    // 清理资源
-    if (chatPanel) {
-        chatPanel.dispose();
+    logInfo('[Extension] Deactivating extension.');
+    // Provider and output channel disposal are handled via context.subscriptions
+    // Clean up server manager explicitly if needed (its dispose might be in provider disposal)
+    if (serverManager && typeof serverManager.dispose === 'function') {
+        // serverManager.dispose(); // Potentially redundant if provider disposes it
     }
+    isExtensionActivated = false;
+    logInfo('[Extension] Deactivation sequence finished.');
 }
 
-// Register the "Hello World" command
-function registerHelloWorldCommand(context: vscode.ExtensionContext) {
-    const helloWorldDisposable = vscode.commands.registerCommand('mcp-client.helloWorld', () => {
-		vscode.window.showInformationMessage('Hello World from mcp-client!');
-	});
-    context.subscriptions.push(helloWorldDisposable);
-}
+// --- Removed Functions (Moved to Provider) ---
+// handleSendMessage(...)
+// updateWebviewWithServerList(...)
+// openChatPanel(...)
+// executeServerDeletion(...) -> Logic moved to mcpClient.executeDeleteServer command
+// determineTargetAndFormatMessage(...)
+// setupChatPanelListeners(...)
+// sendErrorToWebview(...)
 
-// Register the "Start Chat" command
-function registerStartChatCommand(context: vscode.ExtensionContext) {
-    const startChatDisposable = vscode.commands.registerCommand('mcpClient.startChat', () => {
-        console.log('Command executed: mcpClient.startChat');
-        openChatPanel(context);
-    });
-    context.subscriptions.push(startChatDisposable);
-}
-
-// Open or create the chat panel
-function openChatPanel(context: vscode.ExtensionContext) {
-    const columnToShowIn = vscode.window.activeTextEditor?.viewColumn || vscode.ViewColumn.One;
-
-    if (chatPanel) {
-        console.log('Revealing existing chat panel.');
-        chatPanel.reveal(columnToShowIn);
-    } else {
-        console.log('Creating new chat panel.');
-        chatPanel = vscode.window.createWebviewPanel(
-            'mcpChat',
-            'MCP Chat',
-            columnToShowIn,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true
-            }
-        );
-
-        chatPanel.webview.html = getWebviewContent();
-        setupChatPanelListeners(chatPanel, context);
-    }
-}
-
-// Setup listeners for the chat panel
-function setupChatPanelListeners(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
-    panel.onDidDispose(() => {
-        console.log('Chat panel disposed.');
-        chatPanel = undefined;
-    }, null, context.subscriptions);
-
-    panel.webview.onDidReceiveMessage(async (message) => {
-        console.log('Received message:', message.command);
-        if (message.command === 'sendMessage') {
-            await handleSendMessage(message.text, context, panel);
-        }
-    }, undefined, context.subscriptions);
-
-    // 添加服务器状态监听
-    const serverManager = ServerManager.getInstance();
-    serverManager.on('status', (event: ServerStatusEvent) => {
-        panel.webview.postMessage({
-            command: 'updateServerStatus',
-            text: `服务器 ${event.serverId} ${event.status}${event.error ? ' - Error: ' + event.error : ''}`
-        });
-    });
-}
-
-// Handle the "sendMessage" command
-async function handleSendMessage(text: string, context: vscode.ExtensionContext, panel: vscode.WebviewPanel) {
-    const config = vscode.workspace.getConfiguration('mcpClient');
-    
-    // 添加更多调试信息
-    console.log('完整配置:', config);
-    console.log('servers配置:', config.get('servers'));
-    console.log('配置检查:', {
-        hasConfig: config !== undefined,
-        configKeys: Object.keys(config),
-        rawConfig: config.inspect('servers')
-    });
-
-    console.log('Processing message:', text);
-
-   
-    const servers = config.get<Record<string, { type: string; command: string; args?: string[]; env?: Record<string, string> }>>('servers') || {};
-    console.log('Parsed servers:', servers);
-
-    if (Object.keys(servers).length === 0) {
-        vscode.window.showErrorMessage('No MCP servers configured. Please add servers in settings.');
-        return;
-    }
-
-    // 让用户选择一个或多个 MCP 服务器
-    const selectedServers = await vscode.window.showQuickPick(
-        Object.keys(servers),
-        {
-            canPickMany: true,
-            placeHolder: 'Select one or more MCP servers to interact with'
-        }
-    );
-
-    if (!selectedServers || selectedServers.length === 0) {
-        vscode.window.showErrorMessage('No MCP server selected.');
-        return;
-    }
-
-    // 移除 API Key 校验
-    // const apiKey = await getApiKey(context);
-    // if (!apiKey) {
-    //     vscode.window.showErrorMessage('Cannot send message without API Key.');
-    //     return;
-    // }
-
-    // 添加用户消息到聊天历史
-    chatHistory.push({ role: 'user', text });
-
-    if (chatPanel) {
-        // Use type assertion to bypass the check
-        (chatPanel.webview as any).setState({ history: chatHistory });
-    } else {
-        console.error("Cannot save state, chatPanel is undefined.");
-        // Handle this case appropriately - maybe the panel was closed?
-    }
-
-    const serverManager = ServerManager.getInstance();
-    
-    // 并行发送消息到选定的 MCP 服务器
-    try {
-        const responses = await Promise.all(
-            selectedServers.map(async (serverName) => {
-                const serverConfig = servers[serverName];
-                console.log(`准备发送消息到服务器 ${serverName}:`, {
-                    config: serverConfig,
-                    message: text
-                });
-
-                try {
-                    // Use the existing ServerManager to send the message
-                    // This handles getting/creating the server instance and sending the message correctly
-                    // NOTE: Assuming your sendMessage expects a ModelRequest object like { text: string }
-                    //       and returns a ModelResponse object like { text: string }
-                    const response = await serverManager.sendMessage(serverName, { text: text }); // Pass request object
-                    return { server: serverName, response: response.text }; // Adapt based on actual response structure
-                } catch (error) {
-                    console.error(`服务器 ${serverName} 错误:`, error);
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    // Ensure the return structure matches the success case for Promise.all
-                    return { server: serverName, response: `错误: ${errorMessage}` };
-                }
-            })
-        );
-
-        responses.forEach(({ server, response }) => {
-            const formattedResponse = `[${server}] ${response}`;
-            chatHistory.push({ role: 'bot', text: formattedResponse });
-            panel.webview.postMessage({ 
-                command: 'addBotMessage', 
-                text: formattedResponse 
-            });
-
-            // Use type assertion again
-            (panel.webview as any).setState({ history: chatHistory });
-        });
-    } catch (error) {
-        console.error('处理消息时出错:', error);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage('发送消息时出错: ' + errorMessage);
-    }
-}
-
-// Helper function to execute a stdio server
-async function executeStdioServer(serverConfig: { command: string; args?: string[]; env?: Record<string, string> }, text: string): Promise<{ server: string; response: string }> {
-    console.log('开始执行服务器命令');
-    console.log('环境变量:', serverConfig.env);
-    console.log('执行命令:', serverConfig.command);
-    console.log('命令参数:', serverConfig.args);
-    console.log('发送文本:', text);
-
-    return new Promise((resolve) => {
-        const child = cp.spawn(serverConfig.command, serverConfig.args || [], {
-            env: { ...process.env, ...serverConfig.env },
-            shell: true
-        });
-
-        let output = '';
-        let errorOutput = '';
-
-        child.stdout.on('data', (data) => {
-            const chunk = data.toString();
-            console.log('收到服务器输出:', chunk);
-            output += chunk;
-        });
-
-        child.stderr.on('data', (data) => {
-            const chunk = data.toString();
-            console.error('服务器错误输出:', chunk);
-            errorOutput += chunk;
-        });
-
-        child.on('error', (error) => {
-            console.error('进程错误:', error);
-            resolve({ server: serverConfig.command, response: `Error: ${error.message}` });
-        });
-
-        child.on('close', (code) => {
-            console.log('进程退出码:', code);
-            console.log('最终输出:', output);
-            console.log('错误输出:', errorOutput);
-            
-            if (code !== 0) {
-                resolve({ 
-                    server: serverConfig.command, 
-                    response: `Error (${code}): ${errorOutput || output || 'No output'}` 
-                });
-            } else {
-                resolve({ server: serverConfig.command, response: output.trim() || 'No response' });
-            }
-        });
-
-        // 发送消息到服务器
-        try {
-            const input = JSON.stringify({ text }) + '\n';
-            console.log('发送到服务器的输入:', input);
-            child.stdin.write(input);
-            child.stdin.end();
-        } catch (error) {
-            console.error('写入输入时出错:', error);
-        }
-    });
-}
-
-// Helper function to read the local index file
-async function readLocalIndexFile(filePath: string): Promise<string | undefined> {
-    try {
-        const fileUri = vscode.Uri.file(filePath);
-        const fileContent = await vscode.workspace.fs.readFile(fileUri);
-        return Buffer.from(fileContent).toString('utf8');
-    } catch (error) {
-        console.error('Error reading local index file:', error);
-        return undefined;
-    }
-}
-
-// Helper function to get the API key
-async function getApiKey(context: vscode.ExtensionContext): Promise<string | undefined> {
-    const SECRET_STORAGE_API_KEY = 'mcpClientApiKey';
-    let apiKey = await context.secrets.get(SECRET_STORAGE_API_KEY);
-    if (!apiKey) {
-        apiKey = await vscode.window.showInputBox({
-            prompt: 'Enter your LLM API Key',
-            placeHolder: 'Paste your API key here',
-            password: true,
-            ignoreFocusOut: true
-        });
-        if (apiKey) {
-            await context.secrets.store(SECRET_STORAGE_API_KEY, apiKey);
-            vscode.window.showInformationMessage('API Key stored securely.');
-        } else {
-            vscode.window.showErrorMessage('API Key not entered. Cannot proceed.');
-        }
-    }
-    return apiKey;
-}
-
-// Generate the webview content
-function getWebviewContent(): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MCP Chat</title>
-    <style>
-        body { font-family: sans-serif; padding: 1em; }
-        .chat-history { border: 1px solid #ccc; height: 300px; overflow-y: scroll; margin-bottom: 1em; padding: 0.5em; }
-        .message { margin-bottom: 0.5em; }
-        .user-message { text-align: right; }
-        .bot-message { text-align: left; color: blue; }
-        .input-area { display: flex; }
-        #message-input { flex-grow: 1; margin-right: 0.5em; }
-        .server-status { 
-            margin-bottom: 1em; 
-            padding: 0.5em;
-            background-color: #f0f0f0;
-            border-radius: 4px;
-        }
-        .connected { color: green; }
-        .disconnected { color: red; }
-    </style>
-</head>
-<body>
-    <h1>MCP Chat Panel</h1>
-    <div class="server-status" id="server-status">服务器状态: 未连接</div>
-    <div class="chat-history" id="chat-history">
-        <div class="message bot-message">Hello! How can I help you today?</div>
-    </div>
-    <div class="input-area">
-        <input type="text" id="message-input" placeholder="Type your message...">
-        <button id="send-button">Send</button>
-    </div>
-    <script>
-        console.log('--- MINIMAL WEBVIEW SCRIPT EXECUTING ---');
-        alert('Webview Script Running!'); // Add an alert for absolute confirmation
-        try {
-            const vscode = acquireVsCodeApi();
-            console.log('--- acquireVsCodeApi() SUCCEEDED ---');
-        } catch (e) {
-            console.error('--- acquireVsCodeApi() FAILED ---', e);
-            alert('acquireVsCodeApi FAILED!');
-        }
-    </script>
-</body>
-</html>`;
-}

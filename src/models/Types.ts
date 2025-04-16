@@ -4,9 +4,15 @@ import { ProcessMonitor } from '../utils/ProcessMonitor';
 import { ChildProcess } from 'child_process';
 import { Readable, Writable } from 'stream';
 
-// 只保留必要的类型定义
-export type ServerStatusType = 'connected' | 'disconnected';
+// Define ServerStatus enum
+export enum ServerStatus {
+    Disconnected = 'disconnected',
+    Connecting = 'connecting',
+    Connected = 'connected',
+    Error = 'error'
+}
 
+// 只保留必要的类型定义
 export interface BaseServerConfig {
     command: string;
     args?: string[];
@@ -16,25 +22,48 @@ export interface BaseServerConfig {
     model?: string;
 }
 
-export interface StdioConfig extends BaseServerConfig {
-    stdio?: ['pipe', 'pipe', 'pipe'];
-}
-
+/**
+ * Represents the overall status of a managed server - emitted by McpServerManager
+ */
 export interface ServerStatusEvent {
     serverId: string;
-    isReady: boolean;
-    status: 'connected' | 'disconnected';
-    pid?: number;
+    status: ServerStatus; // Use the enum type here
     error?: string;
-    models?: string[];
+    uptime?: number; // Optional: track server uptime
+    lastUpdate?: number;
 }
 
+/**
+ * General server configuration structure (used for storage and setup)
+ */
+export interface ServerConfig {
+    type: 'stdio' | 'http' | string; // Allow custom types
+    command: string;
+    args: string[];
+    shell?: boolean;
+    windowsHide?: boolean;
+    heartbeatEnabled?: boolean;
+    env?: Record<string, string>;
+}
+
+// Keep StdioConfig specific interface if needed, though ServerConfig might suffice
+export interface StdioConfig extends ServerConfig {
+    type: 'stdio';
+}
+
+/**
+ * Represents a request to a model
+ */
 export interface ModelRequest {
-    text: string;
-    model?: string;
-    options?: Record<string, any>;
+    model: string;
+    prompt: string;
+    params?: Record<string, any>;
+    context?: any; // Context for multi-turn conversation, etc.
 }
 
+/**
+ * Represents a response from a model
+ */
 export interface ModelResponse {
     text: string;
     model: string;
@@ -43,25 +72,7 @@ export interface ModelResponse {
         completion_tokens?: number;
         total_tokens?: number;
     };
-}
-
-export interface ServerStatus {
-    isReady: boolean;
-    lastError?: string;
-    lastUpdate?: number;
-    lastActivityTime?: number;
-    uptime?: number;
-    pid?: number;
-    models?: string[];
-}
-
-export interface ServerConfig {
-    type: 'stdio';
-    command: string;
-    args?: string[];
-    shell?: boolean;
-    windowsHide?: boolean;
-    env?: Record<string, string>;
+    error?: string; // Optional error message
 }
 
 export interface ChatMessage {
@@ -69,7 +80,4 @@ export interface ChatMessage {
     text: string;
 }
 
-export interface ServerMessage {
-    request: ModelRequest;
-    response: ModelResponse;
-}
+// Look for IServerStatusListener or similar interfaces

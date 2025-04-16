@@ -3,6 +3,7 @@
   "displayName": "mcp-client",
   "description": "",
   "version": "0.0.1",
+  "publisher": "your-publisher-name",
   "engines": {
     "vscode": "^1.99.0"
   },
@@ -10,7 +11,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:mcpClient.startChat"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -37,9 +38,26 @@
         "title": "MCP Client: Start Chat"
       },
       {
+        "command": "mcpClient.openChat",
+        "title": "MCP Client: Open Chat (Alternative)"
+      },
+      {
         "command": "mcpConfig.diagnoseServer",
         "title": "MCP: 诊断服务器连接",
         "category": "MCP Config"
+      },
+      {
+        "command": "mcpClient.configureServer",
+        "title": "MCP Client: Configure Server Dynamically",
+        "category": "MCP Client"
+      },
+      {
+        "command": "mcpClient.addServer",
+        "title": "MCP Client: Add Server Configuration"
+      },
+      {
+        "command": "mcpClient.removeServer",
+        "title": "MCP Client: Remove Server"
       }
     ],
     "configuration": {
@@ -48,19 +66,6 @@
         "mcpClient.servers": {
           "type": "object",
           "description": "服务器配置",
-          "default": {
-            "default": {
-              "type": "stdio",
-              "command": "uvx",
-              "args": [
-                "--from",
-                "llm-context",
-                "lc-mcp"
-              ],
-              "shell": true,
-              "windowsHide": true
-            }
-          },
           "additionalProperties": {
             "type": "object",
             "required": [
@@ -95,6 +100,11 @@
                 "type": "boolean",
                 "default": true,
                 "description": "在 Windows 上是否隐藏命令提示符窗口"
+              },
+              "heartbeatEnabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否支持心跳"
               }
             }
           }

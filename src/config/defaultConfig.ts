@@ -3,23 +3,32 @@ import { ServerConfig } from '../models/Types';
 // 定义可用的服务器配置
 export const availableServers = {
     // --- Start of section to remove/comment out ---
-    /*
+
     default: {
         type: 'stdio' as const,
-        command: 'uvx',
-        args: ['--from', 'llm-context', 'lc-mcp'],
+        command: 'npx',
+        args: [
+            '-y',
+            '@modelcontextprotocol/server-filesystem',
+            '/Users/zaedinzeng/projects'
+        ],
+        heartbeatEnabled: false,
         shell: true,
         windowsHide: true
     },
-    */
+
     // --- End of section to remove/comment out ---
+    // also add linux version of echo server, if platform is linux
     echo: {
         type: 'stdio' as const,
-        command: 'python',
+        command: process.platform === 'win32' ? 'python' : 'python3',
         args: [
             // Consider making this path relative or configurable if possible
-            'C:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\echo.py'
+            process.platform === 'win32'
+                ? 'C:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\echo.py'
+                : '/Users/zaedinzeng/projects/mcp-client/echo.py'
         ],
+        heartbeatEnabled: true,
         shell: true,
         windowsHide: true
     }

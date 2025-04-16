@@ -26,3 +26,13 @@ export interface ModelRequest {
         stopTokens?: string[];
     };
 }
+
+export interface ServerConfig {
+    type: 'stdio';
+    command: string;
+    args?: string[];
+    shell?: boolean;
+    windowsHide?: boolean;
+    env?: Record<string, string>;
+    heartbeatEnabled?: boolean;
+}

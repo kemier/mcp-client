@@ -1,5 +1,6 @@
 import * as cp from 'child_process';
 import { EventEmitter } from 'events';
+import * as vscode from 'vscode';
 
 interface ServerConfig {
     type: string;
@@ -142,5 +143,52 @@ export class McpServerManager extends EventEmitter {
             server.kill();
         }
         this.servers.clear();
+    }
+
+    /**
+     * Stops the server process if running and removes it from the internal map.
+     * NOTE: This does NOT remove the persistent configuration. That must be
+     * handled separately by the caller (e.g., using ConfigStorage).
+     * @param serverName The name of the server process to stop and remove.
+     * @returns Promise that resolves to true if the process was stopped/removed successfully or didn't exist.
+     */
+    public async removeServerConfiguration(serverName: string): Promise<boolean> {
+        console.log(`Attempting to stop and remove server process: ${serverName}`);
+
+        if (!serverName) {
+            const error = 'Cannot remove server process: No server name provided';
+            console.error(error);
+            vscode.window.showErrorMessage(error);
+            return false;
+        }
+
+        try {
+            // Stop the running server process if it exists in the map
+            if (this.servers.has(serverName)) {
+                console.log(`Server process ${serverName} found, stopping it.`);
+                const server = this.servers.get(serverName);
+                if (server) {
+                    server.kill(); // Send kill signal
+                }
+                // Remove from the in-memory map *after* attempting kill
+                this.servers.delete(serverName);
+                // Emit status update
+                this.emit('status', { server: serverName, status: 'disconnected' });
+                console.log(`Stopped and removed server process entry: "${serverName}"`);
+            } else {
+                 console.log(`Server process ${serverName} not found in memory map.`);
+            }
+
+            // Emit event indicating the process was removed (or wasn't running)
+            // Callers can use this, but primary config/UI updates happen elsewhere.
+            this.emit('serverRemoved', { serverId: serverName }); // Consistent key 'serverId' or 'serverName'
+
+            return true; // Indicate success in stopping/removing the process entry
+        } catch (error: any) {
+            console.error(`Error stopping/removing server process ${serverName}: ${error}`);
+            // Don't show error message here, let caller handle based on context
+            // vscode.window.showErrorMessage(`Failed to stop server process ${serverName}: ${error.message || error}`);
+            return false; // Indicate failure
+        }
     }
 }

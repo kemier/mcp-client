@@ -1,52 +1,72 @@
 import * as vscode from 'vscode';
-import { ServerManager } from '../services/McpServerManager';
-import { LogManager } from '../utils/LogManager';
+import { McpServerManager } from '../services/McpServerManager';
+import { logInfo, logDebug, logError, getErrorMessage, logWarning } from '../utils/logger';
+import { ServerStatus } from '../models/Types';
+import { ConfigStorage } from '../services/ConfigStorage';
+import { extensionContext } from '../extension';
 
-export async function diagnoseServerConnection() {
-    const serverManager = ServerManager.getInstance();
-    const status = serverManager.getStatus();
-    
-    // 获取配置信息
-    const config = vscode.workspace.getConfiguration('mcpClient.servers');
-    const defaultServer = config.get('default');
-    
-    // 检查Python环境
-    let pythonInfo = '';
-    try {
-        const { execSync } = require('child_process');
-        pythonInfo = execSync('python --version', { encoding: 'utf8' });
-    } catch (error) {
-        pythonInfo = '未找到Python';
+// Helper function to safely convert ServerStatus enum to string
+function getServerStatusString(status: ServerStatus | undefined): string {
+    if (status === undefined) {
+        return 'Unknown';
     }
-    
-    LogManager.info('Diagnostics', '服务器诊断信息', {
-        status,
-        config: defaultServer,
-        python: pythonInfo,
-        nodeVersion: process.version,
-        platform: process.platform
-    });
-
-    // 构建用户友好的消息
-    let message = status.isReady 
-        ? `服务器正常运行${status.pid ? ` (PID: ${status.pid})` : ''}`
-        : `服务器未连接\n${status.lastError ? `原因: ${status.lastError}` : ''}`;
-
-    if (!status.isReady) {
-        message += '\n\n可能的解决方案:\n';
-        message += '1. 检查Python是否已安装\n';
-        message += '2. 检查mcp_server模块是否已安装\n';
-        message += '3. 检查服务器配置是否正确';
+    switch (status) {
+        case ServerStatus.Connecting: return 'Connecting';
+        case ServerStatus.Connected: return 'Connected';
+        case ServerStatus.Disconnected: return 'Disconnected';
+        case ServerStatus.Error: return 'Error';
+        default:
+            // This handles potential unexpected enum values gracefully
+            const exhaustiveCheck: never = status;
+            logWarning(`[Diagnostics] Encountered unexpected server status value: ${exhaustiveCheck}`);
+            return 'InvalidStatus'; 
     }
+}
 
-    await vscode.window.showInformationMessage(message, 
-        '查看日志',
-        '打开设置'
-    ).then(selection => {
-        if (selection === '查看日志') {
-            vscode.commands.executeCommand('workbench.action.output.toggleOutput');
-        } else if (selection === '打开设置') {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'mcpClient.servers');
+export function registerDiagnosticCommands(context: vscode.ExtensionContext) {
+    logInfo('[Diagnostics] Registering diagnostic commands');
+
+    // Command to log current server statuses
+    const logServerStatusCommand = vscode.commands.registerCommand('mcpClient.logServerStatus', () => {
+        logInfo('[Diagnostics] Command executed: mcpClient.logServerStatus');
+        try {
+            const serverManager = McpServerManager.getInstance();
+            const configStorage = ConfigStorage.getInstance(extensionContext);
+            const serverNames = configStorage.getServerNames();
+            
+            if (serverNames.length === 0) {
+                logInfo("[Diagnostics] No servers currently managed.");
+                vscode.window.showInformationMessage("No servers are currently being managed.");
+                return;
+            }
+
+            logDebug(`[Diagnostics] Checking status for servers: ${serverNames.join(', ')}`);
+            serverNames.forEach(serverId => {
+                const status = serverManager.getServerStatus(serverId);
+                const uptime = serverManager.getServerUptime(serverId);
+                const lastResponse = serverManager.getLastServerResponseTime(serverId);
+                const statusString = getServerStatusString(status);
+                
+                let logMessage = `[Diagnostics] Server: ${serverId}, Status: ${statusString}`;
+                if (uptime) {
+                    logMessage += `, Uptime (ms): ${Date.now() - uptime}`;
+                }
+                if (lastResponse) {
+                    logMessage += `, Last Response: ${new Date(lastResponse).toISOString()}`;
+                }
+                logInfo(logMessage);
+            });
+            vscode.window.showInformationMessage("Server statuses logged to the MCP Client output channel.");
+
+        } catch (error: any) {
+            logError(`[Diagnostics] Error logging server status: ${getErrorMessage(error)}`);
+            vscode.window.showErrorMessage("Failed to log server status. Check the output channel.");
         }
     });
+
+    context.subscriptions.push(logServerStatusCommand);
+    logInfo('[Diagnostics] Registered command: mcpClient.logServerStatus');
+
+    // Add other diagnostic commands here if needed
+
 }

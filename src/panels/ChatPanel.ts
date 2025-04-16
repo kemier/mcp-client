@@ -1,56 +1,94 @@
 import * as vscode from 'vscode';
-import { ServerManager, ServerStatus } from '../services/McpServerManager';
+import { McpServerManager } from '../services/McpServerManager';
 import { getWebviewContent } from './webview/chatWebview';
-import { ModelRequest, ModelResponse, ServerStatusEvent, ServerStatusType } from '../models/Types';
-import { LogManager } from '../utils/LogManager';
+import { ModelRequest, ModelResponse, ServerStatusEvent, ServerStatus } from '../models/Types';
+import { logDebug, logError, logInfo, logWarning, getErrorMessage } from '../utils/logger';
 
 export class ChatPanel {
-    private static instance: ChatPanel | undefined;
+    public static currentPanel: ChatPanel | undefined;
     private readonly panel: vscode.WebviewPanel;
     private chatHistory: { role: string; text: string }[] = [];
+    private disposables: vscode.Disposable[] = [];
+    private _serverManager: McpServerManager;
 
-    private constructor(context: vscode.ExtensionContext) {
-        const columnToShowIn = vscode.window.activeTextEditor?.viewColumn || vscode.ViewColumn.One;
-        
-        this.panel = vscode.window.createWebviewPanel(
-            'mcpChat',
-            'MCP Chat',
-            columnToShowIn,
-            { enableScripts: true }
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, serverManager: McpServerManager) {
+        this.panel = panel;
+        this._serverManager = serverManager;
+
+        // Set the webview's initial html content
+        this.updateWebviewContent(extensionUri);
+
+        // Listen for when the panel is disposed
+        // This happens when the user closes the panel or when the panel is closed programmatically
+        this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+
+        // Update the content when the view state changes
+        this.panel.onDidChangeViewState(
+            e => {
+                if (this.panel.visible) {
+                    this.updateWebviewContent(extensionUri);
+                }
+            },
+            null,
+            this.disposables
         );
-
-        this.panel.webview.html = getWebviewContent();
-        this.setupListeners(context);
-    }
-
-    public static show(context: vscode.ExtensionContext): ChatPanel {
-        if (ChatPanel.instance) {
-            ChatPanel.instance.panel.reveal();
-            return ChatPanel.instance;
-        }
-
-        ChatPanel.instance = new ChatPanel(context);
-        return ChatPanel.instance;
-    }
-
-    private setupListeners(context: vscode.ExtensionContext): void {
-        // 处理面板关闭
-        this.panel.onDidDispose(() => {
-            ChatPanel.instance = undefined;
-        }, null, context.subscriptions);
 
         // 处理消息
         this.setupMessageListener();
 
         // 服务器状态监听
-        const serverManager = ServerManager.getInstance();
         serverManager.on('status', (event: ServerStatusEvent) => {
-            const statusText = event.status === 'connected' ? '已连接' : '已断开';
+            const statusText = event.status === ServerStatus.Connected ? 'Connected' : 'Disconnected';
             this.panel.webview.postMessage({ 
                 command: 'updateServerStatus', 
-                text: `服务器 ${event.serverId} ${statusText}`  // 修改 server 为 serverId
+                text: `Server ${event.serverId} ${statusText}`
             });
         });
+    }
+
+    private updateWebviewContent(extensionUri: vscode.Uri) {
+        this.panel.webview.html = getWebviewContent(this.panel.webview, extensionUri);
+    }
+
+    public static createOrShow(extensionUri: vscode.Uri, serverManager: McpServerManager) {
+        const column = vscode.window.activeTextEditor
+            ? vscode.window.activeTextEditor.viewColumn
+            : undefined;
+
+        // If we already have a panel, show it.
+        if (ChatPanel.currentPanel) {
+            ChatPanel.currentPanel.panel.reveal(column);
+            return;
+        }
+
+        // Otherwise, create a new panel.
+        const panel = vscode.window.createWebviewPanel(
+            'chatPanel',
+            'Chat Panel',
+            column || vscode.ViewColumn.One,
+            {
+                // Enable JavaScript in the webview
+                enableScripts: true,
+                // Restrict the webview to only loading content from our extension's directory
+                localResourceRoots: [extensionUri]
+            }
+        );
+
+        ChatPanel.currentPanel = new ChatPanel(panel, extensionUri, serverManager);
+    }
+
+    public dispose() {
+        ChatPanel.currentPanel = undefined;
+
+        // Clean up our resources
+        this.panel.dispose();
+
+        while (this.disposables.length) {
+            const disposable = this.disposables.pop();
+            if (disposable) {
+                disposable.dispose();
+            }
+        }
     }
 
     private setupMessageListener(): void {
@@ -62,46 +100,70 @@ export class ChatPanel {
                 case 'showError':
                     vscode.window.showErrorMessage(message.text);
                     break;
+                case 'debugLog':
+                    // Log messages from the webview for debugging
+                    console.log(`[WebView Debug] ${message.text}`);
+                    break;
             }
         });
     }
 
     private async handleMessage(text: string, servers: string[]): Promise<void> {
         try {
-            const serverManager = ServerManager.getInstance();
+            const serverManager = McpServerManager.getInstance();
+            
+            logInfo(`Sending message to servers: ${servers.join(', ')}, text: "${text}"`);
+            
             const responses = await Promise.all(
                 servers.map(async (serverName) => {
                     try {
-                        const request: ModelRequest = { text };
-                        const response = await serverManager.sendMessage(serverName, request);
-                        return { 
-                            server: serverName, 
-                            response: response.text 
+                        const request: ModelRequest = { 
+                            prompt: text,
+                            model: 'default'
                         };
+                        
+                        const responseString = await serverManager.sendMessage(serverName, request);
+                        logInfo(`Received response string from ${serverName}: ${responseString}`);
+                        
+                        let responseText = '';
+                        if (typeof responseString === 'string') {
+                            try { 
+                                const parsed = JSON.parse(responseString);
+                                responseText = parsed.text || parsed.message || parsed.response || responseString; 
+                            } catch { responseText = responseString; }
+                        } else {
+                            responseText = JSON.stringify(responseString);
+                        }
+                        
+                        logDebug(`Extracted text from ${serverName} response: ${responseText}`);
+                        
+                        return { server: serverName, response: responseText };
                     } catch (error) {
+                        logError(`Error sending message to ${serverName}: ${getErrorMessage(error)}`);
                         return { 
                             server: serverName, 
-                            response: `错误: ${error instanceof Error ? error.message : String(error)}` 
+                            response: `Error: ${getErrorMessage(error)}` 
                         };
                     }
                 })
             );
 
             responses.forEach(({ server, response }) => {
+                logDebug(`Sending message to webview for ${server}: ${response}`);
                 this.panel.webview.postMessage({ 
                     command: 'addBotMessage', 
                     text: `[${server}] ${response}` 
                 });
             });
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage('发送消息时出错: ' + errorMessage);
+            logError(`Error handling message: ${getErrorMessage(error)}`);
+            vscode.window.showErrorMessage('Error sending message: ' + getErrorMessage(error));
         }
     }
 
     private async sendMessageToServer(message: string): Promise<void> {
         try {
-            const serverManager = ServerManager.getInstance();
+            const serverManager = McpServerManager.getInstance();
             const serverName = 'default'; // 或从配置中获取
 
             // 向界面发送消息状态
@@ -110,13 +172,18 @@ export class ChatPanel {
                 text: '正在处理消息...'
             });
 
-            const request: ModelRequest = {
-                text: message,
-                model: 'default' // 可以从配置中获取
+            const request: ModelRequest = { 
+                prompt: message, 
+                model: 'default'
             };
 
             const response = await serverManager.sendMessage(serverName, request);
             
+            // Handle potential string or object response
+            const responseText = typeof response === 'string' 
+                ? response 
+                : (response as any).text || JSON.stringify(response);
+
             // 更新聊天记录
             this.updateChatHistory({
                 request: {
@@ -125,7 +192,7 @@ export class ChatPanel {
                 },
                 response: {
                     role: 'assistant',
-                    text: response.text
+                    text: responseText
                 }
             });
 
@@ -138,7 +205,7 @@ export class ChatPanel {
                 text: ''
             });
         } catch (error) {
-            LogManager.error('ChatPanel', '发送消息失败', error);
+            logError(`ChatPanel: Failed to send message: ${getErrorMessage(error)}`);
             
             const errorMessage = error instanceof Error ? error.message : String(error);
             vscode.window.showErrorMessage(`发送消息失败: ${errorMessage}`);
@@ -171,11 +238,11 @@ export class ChatPanel {
     }
 
     private updateServerStatus(event: ServerStatusEvent) {
-        const statusText = event.status === 'connected' ? '已连接' : '已断开';
+        const statusText = event.status === ServerStatus.Connected ? 'Connected' : 'Disconnected';
         
         this.panel.webview.postMessage({  // 使用 this.panel.webview 替代 this.webview
             command: 'updateServerStatus',
-            text: `服务器 ${event.serverId} ${statusText}`  // 修改 server 为 serverId
+            text: `Server ${event.serverId} ${statusText}`
         });
     }
 }
