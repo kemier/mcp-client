@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { EventEmitter } from 'events';
-import { ServerStatus, ServerStatusEvent, ServerConfig, ModelRequest, ModelResponse } from '../models/Types';
+import { ServerStatus, ServerStatusEvent, ServerConfig, ModelRequest, ModelResponse, CapabilityManifest } from '../models/Types';
 import { StdioServer, IServer } from './StdioServer';
 import * as cp from 'child_process';
 import { logInfo, logError, logDebug, logWarning, getErrorMessage } from '../utils/logger';
 import { ConfigStorage } from './ConfigStorage';
 import { extensionContext } from '../extension';
+import { LogManager } from '../utils/LogManager';
+import { Tool } from '@anthropic-ai/sdk/resources';
 
 // Hardcoded default is no longer the primary fallback, but might be kept for internal use if needed
 // const hardcodedDefaultConfig: ServerConfig = { ... };
@@ -41,6 +43,7 @@ export class McpServerManager extends EventEmitter {
     private configStorage: ConfigStorage;
     private serverStatuses: Map<string, ServerStatus> = new Map();
     private serverUptimes: Map<string, number> = new Map();
+    private serverTools: Map<string, Tool[]> = new Map();
 
     private constructor(configStorage: ConfigStorage) {
         super();
@@ -194,71 +197,7 @@ export class McpServerManager extends EventEmitter {
      * @param serverId The ID of the server to start
      * @returns A promise that resolves when the server is started
      */
-    async startServer(serverId: string): Promise<void> {
-        logInfo(`[ServerManager] Attempting to start server ${serverId}...`);
-        if (this.servers.has(serverId) && this.isServerRunning(serverId)) {
-            logWarning(`[ServerManager] Server ${serverId} is already running.`);
-            return;
-        }
-
-        const config = this.dynamicConfigs.get(serverId) || this.configStorage.getServer(serverId);
-        if (!config) {
-            throw new Error(`Configuration for server ${serverId} not found.`);
-        }
-        logDebug(`[ServerManager] Found config for ${serverId}: ${JSON.stringify(config)}`);
-
-        if (this.servers.has(serverId)) {
-             logDebug(`[ServerManager] Disposing existing (non-running) instance of ${serverId} before restart.`);
-            await this.stopServer(serverId);
-        }
-
-        try {
-            const server = new StdioServer(serverId, config);
-            this.servers.set(serverId, server);
-
-            server.on('status', (status: ServerStatus) => {
-                logInfo(`[ServerManager] Server ${serverId} status changed: ${status}`);
-                this.updateServerStatus(serverId, status);
-            });
-            server.on('data', (data: string) => {
-                logDebug(`[ServerManager] Data received from ${serverId}: ${data}`);
-                this.emit('data', { serverId, data });
-                try {
-                    const jsonData = JSON.parse(data);
-                    if (jsonData.command === 'abilities_response' && jsonData.abilities) {
-                        logInfo(`[ServerManager] Detected abilities_response from ${serverId}.`);
-                        this.emit('abilities_response', { serverId, abilities: jsonData.abilities });
-                    } else if (jsonData.command === 'message_response') {
-                        logDebug(`[ServerManager] Received message_response from ${serverId}`);
-                        this.emit('message_response', { serverId, response: jsonData.response });
-                    }
-                } catch (e) {
-                    logDebug(`[ServerManager] Non-JSON or non-ability data from ${serverId}`);
-                }
-            });
-            server.on('error', (error: Error) => {
-                logError(`[ServerManager] Error from ${serverId}: ${error.message}`);
-                this.emit('error', { serverId, error });
-                this.updateServerStatus(serverId, ServerStatus.Error, error.message);
-            });
-            server.on('exit', (code: number | null, signal: string | null) => {
-                logWarning(`[ServerManager] Server ${serverId} exited with code ${code}, signal ${signal}`);
-                this.emit('exit', { serverId, code, signal });
-                this.updateServerStatus(serverId, ServerStatus.Disconnected, `Exited with code ${code}, signal ${signal}`);
-                this.servers.delete(serverId);
-            });
-
-            logInfo(`[ServerManager] Starting server process for ${serverId}...`);
-            await server.start();
-            logInfo(`[ServerManager] Server ${serverId} start initiated.`);
-
-        } catch (error) {
-            logError(`[ServerManager] Failed to create or start StdioServer for ${serverId}: ${getErrorMessage(error)}`);
-            this.updateServerStatus(serverId, ServerStatus.Error, getErrorMessage(error));
-            throw error;
-        }
-    }
-
+    
     /**
      * Restart a server with the given ID
      * @param serverId The ID of the server to restart
@@ -510,17 +449,10 @@ export class McpServerManager extends EventEmitter {
             // Option 3: Rely solely on process check (isServerRunning)
             
             // Let's try sending a simple newline as a basic liveness check for stdio
-            if (typeof server.sendMessage === 'function') {
-                logDebug(`[ServerManager] Sending newline to ${serverId} as basic ping.`);
-                await server.sendMessage('\n'); // Send newline
-                // We can't easily wait for a specific response here with the current setup
-                // Assume success if sending didn't throw an immediate error
-                logInfo(`[ServerManager] Basic ping (newline sent) to ${serverId} succeeded.`);
-                return true; 
-            } else {
-                logWarning(`[ServerManager] Cannot ping server '${serverId}': No suitable sendMessage method.`);
-                return false;
-            }
+           // --- MODIFIED: Relying on process check instead ---
+           const isProcRunning = this.isServerRunning(serverId);
+           logInfo(`[ServerManager] Ping check for ${serverId} relying on isServerRunning: ${isProcRunning}`);
+           return isProcRunning;
 
         } catch (error) {
             logWarning(`[ServerManager] Server ${serverId} ping failed: ${getErrorMessage(error)}`); 
@@ -537,52 +469,6 @@ export class McpServerManager extends EventEmitter {
         } else {
             logInfo(message);
         }
-    }
-
-    /**
-     * Send a message to a server
-     * @param serverId The ID of the server to send the message to
-     * @param message The message to send - can be string or object
-     * @param options Optional parameters including message ID
-     * @returns A promise that resolves to the server's response
-     */
-    public sendMessage(serverId: string, message: string | any, options: { id?: string } = {}): Promise<string> {
-        return new Promise(async (resolve, reject) => {
-            const server = this.getServer(serverId);
-            if (!server) {
-                throw new Error(`Server ${serverId} not found`);
-            }
-
-            await this.ensureServerStarted(serverId);
-            
-            let messageObj: any;
-            
-            if (typeof message === 'string') {
-                messageObj = options.id ? { text: message, id: options.id } : message;
-            } else {
-                messageObj = { ...message };
-                if (options.id) {
-                    messageObj.id = options.id;
-                }
-            }
-            
-            const messageString = JSON.stringify(messageObj);
-            logDebug(`[ServerManager] Sending message to ${serverId} with ID ${options.id}: ${messageString}`);
-
-            const responseListener = (response: { serverId: string; data: string }) => {
-                if (response.serverId === serverId) {
-                    resolve(response.data);
-                }
-            };
-
-            this.on('data', responseListener);
-
-            if (typeof server.sendMessage === 'function') {
-                server.sendMessage(messageString);
-            } else {
-                reject(new Error(`Server ${serverId} does not support sending messages via sendMessage.`));
-            }
-        });
     }
 
     private validateServerConfig(config: ServerConfig, serverName: string): void {
@@ -735,48 +621,47 @@ export class McpServerManager extends EventEmitter {
      * @param serverName server name to stop
      */
     public async stopServer(serverName: string): Promise<void> {
-        logInfo(`[ServerManager] Stopping server: ${serverName}`);
-        this.clearHealthCheckInterval(serverName);
-        
         const server = this.servers.get(serverName);
         if (server) {
+            LogManager.info('McpServerManager', `Stopping server: ${serverName}`);
             try {
-                server.dispose();
-                this.servers.delete(serverName);
-                this.updateServerStatus(serverName, ServerStatus.Disconnected);
-                logInfo(`[ServerManager] Server ${serverName} stopped successfully.`);
+                 await server.dispose(); // Assuming IServer uses dispose() for cleanup
+                 this.servers.delete(serverName); // Remove the instance
+                 if (this.serverTools.delete(serverName)) {
+                    LogManager.info('McpServerManager', `Cleared cached tools for stopped server: ${serverName}`);
+                 }
+                 // Emit status update AFTER cleanup
+                 this.emit('status', { serverId: serverName, status: ServerStatus.Disconnected });
+                 LogManager.info('McpServerManager', `Server ${serverName} stopped and instance removed.`);
             } catch (error) {
-                const errorMsg = error instanceof Error ? error.message : String(error);
-                logError(`[ServerManager] Error stopping server ${serverName}: ${errorMsg}`);
-                throw new Error(`Failed to stop server ${serverName}: ${errorMsg}`);
+                 LogManager.error('McpServerManager', `Error stopping server ${serverName}`, error);
+                 // Emit error status even on failure to stop cleanly
+                 this.emit('status', { serverId: serverName, status: ServerStatus.Error, error: error });
+                 // Optionally re-throw or handle differently
+                 throw error; // Re-throw allows caller to know stop failed
             }
         } else {
-            logWarning(`[ServerManager] Cannot stop server ${serverName}: not found or already stopped.`);
+             LogManager.warn('McpServerManager', `Attempted to stop non-existent or already stopped server instance: ${serverName}`);
+             // Emit stopped status anyway if the config exists but instance doesn't
+             if (this.configStorage.getServer(serverName)) {
+                 this.emit('status', { serverId: serverName, status: ServerStatus.Disconnected });
+             }
         }
     }
 
     public dispose(): void {
-        logInfo(`[ServerManager] Disposing ServerManager instance...`);
-        for (const serverName of this.healthCheckIntervals.keys()) {
-            this.clearHealthCheckInterval(serverName);
-        }
-        
-        const serverNames = Array.from(this.servers.keys());
-        logInfo(`[ServerManager] Stopping ${serverNames.length} server(s): ${serverNames.join(', ')}`);
-        for (const name of serverNames) {
-            const server = this.servers.get(name);
-            if (server) {
-                try {
-                    logInfo(`[ServerManager] Disposing server: ${name}`);
+        LogManager.info('McpServerManager', 'Disposing McpServerManager...');
+        this.servers.forEach((server, serverName) => {
+            try {
                     server.dispose();
-                } catch (error) {
-                    const errorMsg = error instanceof Error ? error.message : String(error);
-                    logError(`[ServerManager] Error disposing server ${name}: ${errorMsg}`);
+            } catch (e) {
+                LogManager.error('McpServerManager', `Error disposing server ${serverName} during dispose`, e);
                 }
-            }
-        }
+        });
         this.servers.clear();
-        logInfo(`[ServerManager] Server instances disposed and map cleared.`);
+        this.serverTools.clear(); // Clear the tools map
+        this.removeAllListeners(); // Clean up event listeners
+        LogManager.info('McpServerManager', 'Disposed.');
     }
 
     /**
@@ -826,35 +711,29 @@ export class McpServerManager extends EventEmitter {
 
         // Prompt for Arguments (Optional)
         const argsInput = await vscode.window.showInputBox({
-            prompt: `Enter command arguments for "${serverName}" (comma-separated)`,
-            placeHolder: 'e.g., -y, my-package, --port, 8080',
+            prompt: `Enter the arguments for the command (comma-separated)`,
+            placeHolder: 'e.g., --arg1 --arg2',
             ignoreFocusOut: true
         });
         const args = argsInput ? argsInput.split(',').map(arg => arg.trim()).filter(arg => arg) : [];
 
         // Prompt for Shell (Optional)
         const shellPick = await vscode.window.showQuickPick(['Yes', 'No'], {
-            title: `Use shell to execute command for "${serverName}"? (Recommended: Yes)`,
-            placeHolder: 'Select Yes or No',
-            canPickMany: false,
+            title: 'Use shell?',
             ignoreFocusOut: true
         });
         const shell = shellPick === 'Yes';
 
         // Prompt for Windows Hide (Optional)
         const windowsHidePick = await vscode.window.showQuickPick(['Yes', 'No'], {
-            title: `Hide command window for "${serverName}" on Windows? (Recommended: Yes)`,
-            placeHolder: 'Select Yes or No',
-            canPickMany: false,
+            title: 'Hide window?',
             ignoreFocusOut: true
         });
         const windowsHide = windowsHidePick === 'Yes';
 
         // Prompt for Heartbeat (Optional)
         const heartbeatPick = await vscode.window.showQuickPick(['Yes', 'No'], {
-            title: `Does server "${serverName}" support heartbeat? (Default: No)`,
-            placeHolder: 'Select Yes or No',
-            canPickMany: false,
+            title: 'Enable heartbeat?',
             ignoreFocusOut: true
         });
         const heartbeatEnabled = heartbeatPick === 'Yes';
@@ -866,7 +745,8 @@ export class McpServerManager extends EventEmitter {
             args: args,
             shell: shell,
             windowsHide: windowsHide,
-            heartbeatEnabled: heartbeatEnabled
+            heartbeatEnabled: heartbeatEnabled,
+            env: {} // Or load/prompt for environment variables if needed
         };
 
         logInfo(`[ServerManager] Storing dynamically entered configuration for ${serverName}: ${JSON.stringify(newConfig)}`);
@@ -875,97 +755,204 @@ export class McpServerManager extends EventEmitter {
         return newConfig;
     }
 
-    /**
-     * Removes a server configuration from storage
-     * @param serverId The unique identifier of the server to remove
-     * @returns A boolean indicating if the server was successfully removed
-     */
-    async removeServerConfiguration(serverId: string): Promise<boolean> {
-        logInfo(`[ServerManager] Removing configuration for server: ${serverId}`);
-        
-        if (!serverId) {
-            logError('[ServerManager] Cannot remove server: No server ID provided');
-            return false;
+    public getServerStatus(serverId: string): ServerStatus {
+        const server = this.getServer(serverId);
+        if (!server) {
+            return this.serverStatuses.get(serverId) || ServerStatus.Disconnected;
         }
-        
-        try {
-            // Stop the server first if it's running
-            await this.stopServer(serverId);
-            
-            // Get current configurations from storage
-            const configStorage = ConfigStorage.getInstance(extensionContext);
-            const configs = configStorage.getAllServers();
-            
-            // Check if server exists
-            if (!configs[serverId]) {
-                logWarning(`[ServerManager] Server "${serverId}" not found in configurations, nothing to remove`);
-                return true; // Nothing to remove, so consider it success
-            }
-            
-            // Delete the server from the configurations
-            configStorage.removeServer(serverId);
-            
-            // Also remove the server from the servers map if it exists
-            if (this.servers.has(serverId)) {
-                this.servers.delete(serverId);
-                logInfo(`[ServerManager] Removed server "${serverId}" from active servers map`);
-            }
-            
-            // Verify server was removed
-            const updatedConfigs = configStorage.getAllServers();
-            const wasRemoved = !updatedConfigs[serverId];
-            
-            if (wasRemoved) {
-                logInfo(`[ServerManager] Successfully removed server "${serverId}" from configurations`);
-            } else {
-                // This case might indicate an issue with ConfigStorage.removeServer
-                logError(`[ServerManager] Failed to remove server "${serverId}" from configurations despite finding it initially.`);
-            }
-            
-            // Notify listeners about the removal
-            // FIX: Use ServerStatus enum instead of string
-            this.emit('status', {
-                serverId,
-                status: ServerStatus.Disconnected, 
-                message: `Server ${serverId} has been removed`
-            });
-            
-            return wasRemoved;
-        } catch (error) {
-            // FIX: Combine error into the log message string
-            logError(`[ServerManager] Error removing server configuration for ${serverId}: ${getErrorMessage(error)}`);
-            return false;
-        }
+        return server.getStatus();
     }
 
-    // --- Public Getters for Status Information ---
-
-    /**
-     * Get the current status of a specific server.
-     * @param serverId The ID of the server.
-     * @returns The ServerStatus enum value, or undefined if the server is unknown.
-     */
-    public getServerStatus(serverId: string): ServerStatus | undefined {
-        return this.serverStatuses.get(serverId);
-    }
-
-    /**
-     * Get the uptime timestamp (when it connected) for a specific server.
-     * @param serverId The ID of the server.
-     * @returns The timestamp (milliseconds since epoch) when the server connected, or undefined.
-     */
     public getServerUptime(serverId: string): number | undefined {
         return this.serverUptimes.get(serverId);
     }
 
-    /**
-     * Get the timestamp of the last known response received from a specific server.
-     * @param serverId The ID of the server.
-     * @returns The timestamp (milliseconds since epoch) of the last response, or undefined.
-     */
     public getLastServerResponseTime(serverId: string): number | undefined {
         return this._lastServerResponseTime.get(serverId);
     }
 
-    // --- End Public Getters ---
+    public async startServer(serverId: string): Promise<IServer> {
+        if (this.servers.has(serverId)) {
+            const existingServer = this.servers.get(serverId);
+            if (existingServer && existingServer.getStatus() !== ServerStatus.Disconnected) {
+                LogManager.warn('McpServerManager', `Server ${serverId} already exists and is not disconnected (${existingServer.getStatus()}). Returning existing instance.`);
+                return existingServer;
+            }
+             LogManager.info('McpServerManager', `Disposing existing disconnected server instance for ${serverId} before restart.`);
+             await existingServer?.dispose();
+        }
+
+        const serverConfig = this.configStorage.getServer(serverId) || this.dynamicConfigs.get(serverId);
+        if (!serverConfig) {
+            throw new Error(`Configuration for server ${serverId} not found.`);
+        }
+
+        LogManager.info('McpServerManager', `Creating new server instance for ${serverId}...`);
+        const server = new StdioServer(serverId, serverConfig /*, LogManager */);
+
+        this.servers.set(serverId, server);
+
+        server.on('status', (event: ServerStatusEvent) => this.handleServerStatusChange(event));
+        server.on('error', (error: any) => {
+             LogManager.error('McpServerManager', `Error reported by server ${serverId}`, error);
+             this.handleServerStatusChange({ serverId, status: ServerStatus.Error, error: LogManager.getErrorMessage(error) });
+         });
+        server.on('stdout', (data: string) => LogManager.debug('McpServerManager', `[${serverId}-stdout] ${data}`));
+        server.on('stderr', (data: string) => LogManager.error('McpServerManager', `[${serverId}-stderr] ${data}`));
+        server.on('toolsReceived', (tools: Tool[]) => {
+            this.handleToolsReceived(serverId, tools);
+        });
+
+        LogManager.info('McpServerManager', `Starting server process for ${serverId}...`);
+        try {
+            await server.start();
+            LogManager.info('McpServerManager', `Server ${serverId} process start initiated.`);
+            return server;
+        } catch (error) {
+            LogManager.error('McpServerManager', `Failed to start server process for ${serverId}`, error);
+            this.servers.delete(serverId);
+            this.handleServerStatusChange({ serverId, status: ServerStatus.Error, error: LogManager.getErrorMessage(error) });
+            throw error;
+        }
+    }
+
+    public async removeServerConfiguration(serverId: string): Promise<boolean> {
+        LogManager.info('McpServerManager', `Attempting to remove configuration and stop server: ${serverId}`);
+        try {
+            if (this.servers.has(serverId)) {
+                await this.stopServer(serverId);
+            }
+            const success = await this.configStorage.removeServer(serverId);
+            if (success) {
+                this.serverTools.delete(serverId);
+                LogManager.info('McpServerManager', `Successfully removed configuration for server: ${serverId}`);
+            } else {
+                LogManager.warn('McpServerManager', `ConfigStorage failed to remove configuration for server: ${serverId}`);
+            }
+            return success;
+        } catch (error) {
+            LogManager.error('McpServerManager', `Error removing server configuration for ${serverId}`, error);
+            return false;
+        }
+    }
+
+    public async refreshCapabilities(serverId: string): Promise<void> {
+        const server = this.servers.get(serverId);
+        if (!server || server.getStatus() !== ServerStatus.Connected) {
+            LogManager.warn('McpServerManager', `Cannot refresh capabilities for ${serverId}: Server not connected.`);
+            throw new Error(`Server ${serverId} is not connected.`);
+        }
+        LogManager.info('McpServerManager', `Requesting capability refresh for ${serverId}...`);
+        try {
+             await server.refreshCapabilities();
+             LogManager.info('McpServerManager', `Capability refresh requested for ${serverId}.`);
+        } catch (error) {
+             LogManager.error('McpServerManager', `Failed to request capability refresh for ${serverId}`, error);
+             if (this.serverTools.delete(serverId)) {
+                 LogManager.info('McpServerManager', `Cleared tools for ${serverId} due to refresh request failure.`);
+             }
+             this.emit('status', { serverId, status: ServerStatus.Error, error: `Capability refresh failed: ${LogManager.getErrorMessage(error)}` });
+             throw error;
+        }
+    }
+
+    public async sendMessage(serverId: string, request: ModelRequest): Promise<string> {
+        LogManager.info('McpServerManager', `Attempting to send message to server: ${serverId}`);
+        let server = this.servers.get(serverId);
+
+        if (!server || server.getStatus() === ServerStatus.Disconnected || server.getStatus() === ServerStatus.Connecting) {
+             LogManager.info('McpServerManager', `Server ${serverId} not found or not connected (${server?.getStatus() ?? 'Not Found'}). Attempting start/ensure.`);
+             try {
+                 server = await this.startServer(serverId);
+                 LogManager.debug('McpServerManager', `Pausing briefly after starting ${serverId}...`);
+                 await new Promise(resolve => setTimeout(resolve, 1500));
+
+                 if (!server || server.getStatus() !== ServerStatus.Connected) {
+                     const currentStatus = this.serverStatuses.get(serverId);
+                     if (currentStatus !== ServerStatus.Connected) {
+                        LogManager.warn('McpServerManager', `Server ${serverId} still not connected after start attempt and pause (Status: ${currentStatus ?? server?.getStatus()}). Message send might fail.`);
+                     } else {
+                         LogManager.info('McpServerManager', `Server ${serverId} status map shows Connected after pause.`);
+                     }
+                 } else {
+                     LogManager.info('McpServerManager', `Server ${serverId} instance shows Connected after pause.`);
+                 }
+
+             } catch (startError) {
+                 LogManager.error('McpServerManager', `Failed to start/ready server ${serverId} for sending message`, startError);
+                 throw new Error(`Failed to start or ensure readiness of server ${serverId}: ${LogManager.getErrorMessage(startError)}`);
+             }
+        }
+
+        if (!server) {
+             LogManager.error('McpServerManager', `Server instance for ${serverId} is unexpectedly null after checks.`);
+             throw new Error(`Server ${serverId} instance is unexpectedly missing.`);
+        }
+
+        LogManager.debug('McpServerManager', `Sending message to ${serverId}: ${JSON.stringify(request)}`);
+        try {
+            const response = await server.sendMessage(request);
+            LogManager.info('McpServerManager', `Received response from ${serverId}`);
+            this._lastServerResponseTime.set(serverId, Date.now());
+            return response;
+        } catch (sendError) {
+            LogManager.error('McpServerManager', `Error during server.sendMessage for ${serverId}`, sendError);
+            if (server.getStatus() !== ServerStatus.Connected) {
+                 LogManager.warn('McpServerManager', `Server ${serverId} is no longer connected after send error (Status: ${server.getStatus()}).`);
+                 this.handleServerStatusChange({ serverId, status: server.getStatus(), error: LogManager.getErrorMessage(sendError) });
+            }
+            throw sendError;
+        }
+    }
+
+    private handleServerStatusChange(event: ServerStatusEvent): void {
+        const { serverId, status, error } = event;
+        const currentStatus = this.serverStatuses.get(serverId);
+
+        if (currentStatus === status && !(status === ServerStatus.Error && error)) {
+            return;
+        }
+
+        LogManager.info('McpServerManager', `Handling status change for ${serverId}: ${status}`, { error: error ? LogManager.getErrorMessage(error) : undefined });
+        this.serverStatuses.set(serverId, status);
+
+        if (status === ServerStatus.Connected) {
+            this.serverUptimes.set(serverId, Date.now());
+            this._serverPingAttempts.delete(serverId);
+            this.refreshCapabilities(serverId).catch(refreshError => {
+                LogManager.error('McpServerManager', `Auto-refresh capabilities failed for ${serverId} on connect`, refreshError);
+            });
+        } else {
+            this.serverUptimes.delete(serverId);
+            if (status === ServerStatus.Disconnected || status === ServerStatus.Error) {
+                 if (this.serverTools.delete(serverId)) {
+                    LogManager.info('McpServerManager', `Cleared cached tools for server ${serverId} due to status change: ${status}`);
+                 }
+            }
+            if (status === ServerStatus.Disconnected || status === ServerStatus.Error) {
+                 const serverInstance = this.servers.get(serverId);
+                 if (serverInstance /* && !serverInstance.isStoppingExplicitly() */) {
+                     LogManager.warn('McpServerManager', `Server ${serverId} disconnected unexpectedly or errored. Removing instance.`);
+                     serverInstance.dispose();
+                     this.servers.delete(serverId);
+                 }
+            }
+        }
+
+        this.emit('status', event);
+        this.notifyStatusListeners(serverId, status);
+    }
+
+    public handleToolsReceived(serverId: string, tools: Tool[]): void {
+        const server = this.servers.get(serverId);
+        if (server && server.getStatus() === ServerStatus.Connected) {
+            LogManager.info('McpServerManager', `Storing ${tools.length} tools for connected server ${serverId}`);
+            this.serverTools.set(serverId, tools);
+        } else {
+            LogManager.warn('McpServerManager', `Received tools for server ${serverId}, but it's not in Connected state (current: ${server?.getStatus() ?? 'N/A'}). Tools ignored.`);
+            if (this.serverTools.has(serverId)) {
+                 this.serverTools.delete(serverId);
+            }
+        }
+    }
 }

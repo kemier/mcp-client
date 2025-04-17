@@ -3,6 +3,7 @@ import { isProcessHandle, ProcessLogger } from '../utils/ProcessUtils';
 import { ProcessMonitor } from '../utils/ProcessMonitor';
 import { ChildProcess } from 'child_process';
 import { Readable, Writable } from 'stream';
+import * as vscode from 'vscode';
 
 // Define ServerStatus enum
 export enum ServerStatus {
@@ -31,19 +32,23 @@ export interface ServerStatusEvent {
     error?: string;
     uptime?: number; // Optional: track server uptime
     lastUpdate?: number;
+    pid?: number; // Optional: process ID
+    models?: string[]; // Optional: available models
 }
 
 /**
  * General server configuration structure (used for storage and setup)
  */
 export interface ServerConfig {
-    type: 'stdio' | 'http' | string; // Allow custom types
+    type: 'stdio' | 'sse';
     command: string;
-    args: string[];
+    args?: string[];
     shell?: boolean;
     windowsHide?: boolean;
     heartbeatEnabled?: boolean;
     env?: Record<string, string>;
+    url?: string;
+    autoApprove?: boolean;
 }
 
 // Keep StdioConfig specific interface if needed, though ServerConfig might suffice
@@ -55,10 +60,9 @@ export interface StdioConfig extends ServerConfig {
  * Represents a request to a model
  */
 export interface ModelRequest {
-    model: string;
     prompt: string;
-    params?: Record<string, any>;
-    context?: any; // Context for multi-turn conversation, etc.
+    model: string;
+    id?: string;
 }
 
 /**
@@ -66,18 +70,39 @@ export interface ModelRequest {
  */
 export interface ModelResponse {
     text: string;
-    model: string;
-    usage?: {
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        total_tokens?: number;
-    };
-    error?: string; // Optional error message
+    id?: string;
 }
 
 export interface ChatMessage {
     role: string;
     text: string;
+}
+
+/**
+ * Represents a specific server capability
+ */
+export interface ServerCapability {
+    name: string;
+    type: 'model' | 'context' | 'feature';
+    description?: string;
+    parameters?: Record<string, any>;
+    confidence?: number; // 0-100% confidence in this capability
+}
+
+/**
+ * Represents a complete capability manifest
+ */
+export interface CapabilityManifest {
+    models: string[];
+    capabilities: CapabilityItem[];
+    contextTypes: string[];
+    discoveredAt: number;
+}
+
+export interface CapabilityItem {
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, any> | { type: 'object', properties: Record<string, any>, required?: string[] };
 }
 
 // Look for IServerStatusListener or similar interfaces

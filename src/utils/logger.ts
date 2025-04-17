@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { LogManager } from './LogManager';
 
 // Declare the output channel at the module level
 let outputChannel: vscode.OutputChannel | undefined;
@@ -33,15 +34,12 @@ function getOutputChannel(): vscode.OutputChannel {
 
 // Utility function to extract message from any error type
 export function getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-        return error.message;
-    }
-    return String(error);
+    return LogManager.getErrorMessage(error);
 }
 
 // Utility functions for logging
-export function logDebug(message: string): void {
-    console.log(message);
+export function logDebug(message: string, data?: any): void {
+    LogManager.debug(message, data);
     try {
         getOutputChannel().appendLine(`[DEBUG] ${message}`);
     } catch (e) {
@@ -49,8 +47,8 @@ export function logDebug(message: string): void {
     }
 }
 
-export function logError(message: string): void {
-    console.error(message);
+export function logError(message: string, data?: any): void {
+    LogManager.error(message, data);
     try {
         getOutputChannel().appendLine(`[ERROR] ${message}`);
         // Optionally show the output channel when an error occurs
@@ -60,8 +58,8 @@ export function logError(message: string): void {
     }
 }
 
-export function logInfo(message: string): void {
-    console.log(message);
+export function logInfo(message: string, data?: any): void {
+    LogManager.info(message, data);
     try {
         getOutputChannel().appendLine(`[INFO] ${message}`);
     } catch (e) {
@@ -69,8 +67,8 @@ export function logInfo(message: string): void {
     }
 }
 
-export function logWarning(message: string): void {
-    console.warn(message);
+export function logWarning(message: string, data?: any): void {
+    LogManager.warn(message, data);
     try {
         getOutputChannel().appendLine(`[WARN] ${message}`);
     } catch (e) {

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ChatPanel } from '../panels/ChatPanel';
 import { McpServerManager } from '../services/McpServerManager';
+import { registerAddServerCommand } from './ServerCommands';
 
 export class CommandManager {
     private context: vscode.ExtensionContext;
@@ -28,6 +29,9 @@ export class CommandManager {
         
         disposables.push(this.registerShowChatCommand());
         disposables.push(this.registerShowChatWithServerCommand());
+        
+        // Add the new server management commands
+        disposables.push(registerAddServerCommand(this.context));
         
         return disposables;
     }

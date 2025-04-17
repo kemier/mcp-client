@@ -1,21 +1,26 @@
 {
 	"compilerOptions": {
-		"module": "commonjs",
+		"module": "Node16",
+		"moduleResolution": "node16",
 		"target": "ES2020",
 		"outDir": "out",
 		"lib": [
-			"ES2020",
-			"DOM"
+			"ESNext"
 		],
 		"sourceMap": true,
 		"rootDir": "src",
 		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
 		"types": [
 			"node",
-			"mocha",
-			"vscode"
+			"mocha"
 		]
 	},
+	"include": [
+		"src/**/*"
+	],
 	"exclude": [
 		"node_modules",
 		".vscode-test"

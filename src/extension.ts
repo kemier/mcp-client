@@ -1,397 +1,553 @@
-// Import necessary modules
 import * as vscode from 'vscode';
-import * as cp from 'child_process';
-// import { CommandManager } from './commands/CommandManager'; // CommandManager might not be needed now
+import * as path from 'path'; // Needed for LogManager initialization
+import { LogManager } from './utils/LogManager';
+
+// --- Restore necessary imports ---
 import { McpServerManager } from './services/McpServerManager';
-import { ServerStatusEvent, ServerConfig } from './models/Types';
-// import { StdioServer, IServer } from './services/StdioServer'; // Not directly used in extension.ts now
-// import { getWebviewContent } from './panels/webview/chatWebview'; // Handled by Provider
 import { ConfigStorage } from './services/ConfigStorage';
-// Import new logger utility
-import { initializeLogger, logDebug, logError, logInfo, logWarning, getErrorMessage } from './utils/logger';
-// Import the new webview provider
-import { ChatWebviewProvider } from './panels/chatWebviewProvider';
+import { ChatViewProvider } from './panels/ChatViewProvider';
+import { ServerDashboard } from './panels/ServerDashboard';
+import { parseArgumentsString } from './commands/ServerCommands';
+import { ServerStatusEvent, ServerConfig, ModelRequest, ServerCapability, CapabilityItem } from './models/Types';
+import { determineAppropriateServers } from './utils'; // Restore if needed for server selection later
 
-// Export logger functions if needed by other modules directly
-// (Alternatively, they can import directly from './utils/logger')
-export { logDebug, logError, logInfo, logWarning, getErrorMessage };
+// --- Anthropic SDK Imports ---
+import { Anthropic } from "@anthropic-ai/sdk";
+// --- Try importing directly from the resources level ---
+import {
+  MessageParam,
+  Tool,
+  ToolUseBlock,
+  ToolResultBlockParam,
+} from "@anthropic-ai/sdk/resources"; // Removed '/messages.mjs'
 
-// Global variables previously related to chat panel are removed:
-// let chatPanel: vscode.WebviewPanel | undefined = undefined;
-// let chatHistory: { role: string; text: string }[] = [];
-// const serverAbilities = new Map<string, any[]>(); -> Managed by ChatWebviewProvider now
+// --- Declare instances accessible within the module ---
+let configStorage: ConfigStorage;
+let mcpServerManager: McpServerManager;
+// Remove logManager instance variable, as we'll use static methods
 
-// Flag to track if extension is activated
-let isExtensionActivated = false;
+export let extensionContext: vscode.ExtensionContext;
 
-// Global instance of the server manager (still needed)
-let serverManager: McpServerManager;
+// --- Anthropic Client Instance ---
+// Instantiate later when API key is available
+let anthropic: Anthropic | undefined;
 
-// Store a reference to the extension context (still needed)
-let extensionContext: vscode.ExtensionContext;
-export { extensionContext };
-
-// Global instance of the webview provider
-let chatWebviewProvider: ChatWebviewProvider;
-
-// --- Helper functions still needed in extension.ts --- 
-
-// Utility for env vars formatting (keep here or move to utils?)
-function formatEnvironmentVariables(input: string): string {
-    if (!input.trim()) return '{}';
-    if (!input.trim().startsWith('{')) {
-        const parts = input.split(':', 2);
-        if (parts.length === 2) return `{"${parts[0].trim()}":"${parts[1].trim()}"}`;
-        if (!input.includes(':') && !input.includes('{') && !input.includes('}')) return `{"GITHUB_TOKEN":"${input.trim()}"}`;
-        return `{${input}}`;
-    }
-    return input;
-}
-
-// Command cleanup helper
-async function cleanupExistingCommands() {
-    try {
-        const allCommands = await vscode.commands.getCommands();
-        const ourCommands = [
-            'mcpClient.startChat',
-            'mcpClient.addServer',
-            'mcpClient.configureServer',
-            'mcpClient.deleteCurrentServer', // Added based on previous code
-            'mcpClient.deleteGithubServer', // Added based on previous code
-            'mcpClient.deleteServerByName', // Added based on previous code
-             'mcpClient.executeDeleteServer' // New command for provider interaction
-        ];
-        logDebug(`[Extension] Checking for existing commands: ${ourCommands.join(', ')}`);
-        for (const cmd of ourCommands) {
-            if (allCommands.includes(cmd)) {
-                logWarning(`[Extension] Command potentially already exists: ${cmd}. Registration might overwrite or fail silently.`);
-            }
-        }
-    } catch (error: unknown) {
-        logError(`[Extension] Error checking commands: ${getErrorMessage(error)}`);
-    }
-}
-
+// Define the simpler type needed for matching
+type SimpleServerAbility = {
+    name: string;
+    description: string;
+};
 
 // Activate function
 export async function activate(context: vscode.ExtensionContext) {
-    extensionContext = context;
-    if (isExtensionActivated) {
-        console.log('MCP Client extension already activated, skipping activation');
+    extensionContext = context; // Store context globally if needed elsewhere
+
+    // Initialize LogManager FIRST
+    try {
+        LogManager.initialize(context.extensionPath);
+        LogManager.info('Extension', 'MCP Server Manager activating...');
+    } catch (e: any) {
+        console.error("!!! FAILED TO INITIALIZE LogManager !!!", e);
+        vscode.window.showErrorMessage(`MCP Activation Failed (LogManager Init): ${LogManager.getErrorMessage(e)}`);
+        return; // Stop activation if logging fails
+    }
+
+    // Initialize Core Services
+    try {
+        LogManager.debug('Extension', 'Initializing ConfigStorage...');
+        configStorage = ConfigStorage.getInstance(context);
+
+        LogManager.debug('Extension', 'Initializing McpServerManager...');
+        mcpServerManager = McpServerManager.getInstance(configStorage);
+
+        LogManager.debug('Extension', 'Setting up McpServerManager status listener...');
+        mcpServerManager.on('status', (event: ServerStatusEvent) => {
+            LogManager.info('Extension', `Server Status Event: ${event.serverId} -> ${event.status}`, {
+                error: event.error ? LogManager.getErrorMessage(event.error) : undefined,
+                statusEnum: event.status
+            });
+            // Forward status - Requires changes in ChatViewProvider and ServerDashboard
+            // Format event to match expected types
+            const formattedEvent = {
+                serverId: event.serverId,
+                status: event.status,
+                error: event.error ? (typeof event.error === 'string' ? new Error(event.error) : event.error) : undefined
+            };
+            
+            ChatViewProvider.instance?.handleStatusUpdate(formattedEvent);
+            // TODO: Add 'public static currentPanel: ServerDashboard | undefined;' to ServerDashboard class (if not present)
+            // TODO: Add 'public handleStatusUpdate(event: ServerStatusEvent): void;' method to ServerDashboard class
+            ServerDashboard.currentPanel?.handleStatusUpdate(formattedEvent);
+        });
+
+        LogManager.info('Extension', 'McpServerManager initialized. Checking auto-start...');
+        const config = vscode.workspace.getConfiguration('mcpServerManager');
+        const autoStartEnabled = config.get<boolean>('autoStartServers', false);
+
+        if (autoStartEnabled) {
+            LogManager.info('Extension', 'Auto-start enabled. Starting configured servers...');
+            const serverNames = configStorage.getServerNames();
+
+            if (serverNames.length > 0) {
+                LogManager.info('Extension', `Attempting to auto-start servers: ${serverNames.join(', ')}`);
+                for (const serverId of serverNames) {
+                    try {
+                        mcpServerManager.startServer(serverId).catch((err: any) => {
+                            LogManager.error('Extension', `Auto-start failed for server '${serverId}'`, err); // Pass error obj as data
+                        });
+                    } catch (error) {
+                        LogManager.error('Extension', `Synchronous error during auto-start attempt for '${serverId}'`, error); // Pass error obj as data
+                    }
+                }
+            } else {
+                LogManager.info('Extension', 'Auto-start enabled, but no servers are configured.');
+            }
+        } else {
+            LogManager.info('Extension', 'Auto-start disabled.');
+        }
+
+    } catch (error: any) {
+        console.error("!!! FAILED DURING CORE SERVICE INIT !!!", error);
+        LogManager.error('Extension', 'Core services (ConfigStorage/McpServerManager) initialization failed', error); // Pass error obj as data
+        vscode.window.showErrorMessage(`Core services failed to initialize: ${LogManager.getErrorMessage(error)}`);
         return;
     }
-    console.log('Activating MCP Client extension...');
-    initializeLogger(context);
-    logInfo("--- MCP Client Activation Sequence Start ---");
-    logInfo('>>> activate function started');
-    logInfo('Congratulations, your extension "mcp-client" is now active!');
 
-    await cleanupExistingCommands();
+    LogManager.info('Extension', 'Core services initialization block finished.');
 
-    // Initialize core services
-    const configStorage = ConfigStorage.getInstance(context);
-    logInfo('[Extension] Configuration storage initialized');
-    serverManager = McpServerManager.getInstance();
-    logInfo('[Extension] Server manager initialized');
-
-    // Initialize the Webview Provider (Pass dependencies)
-    chatWebviewProvider = new ChatWebviewProvider(context, serverManager, configStorage);
-    context.subscriptions.push(chatWebviewProvider); // Add provider to subscriptions for disposal
-    logInfo('[Extension] ChatWebviewProvider initialized');
-
-    // --- Auto-start configured servers --- 
+    // Register Chat View Provider (Sidebar)
     try {
-        logInfo("[Activate] Starting background process to ensure all configured servers are started...");
-        const serverNames = configStorage.getServerNames();
-        logInfo(`[Activate] Found configured servers: ${serverNames.join(', ') || 'None'}`);
-        for (const serverName of serverNames) {
-            (async () => { 
-                try {
-                    logInfo(`[Activate Background] Ensuring server '${serverName}' is started...`);
-                    const config = configStorage.getServer(serverName);
-                    if (config) {
-                        serverManager.setDynamicConfig(serverName, config);
-                        await serverManager.ensureServerStarted(serverName); 
-                        logInfo(`[Activate Background] Successfully ensured server '${serverName}'.`);
-                    } else {
-                        logWarning(`[Activate Background] No config found for '${serverName}'.`);
-                    }
-                } catch (error) {
-                    logError(`[Activate Background] Failed to start server '${serverName}': ${getErrorMessage(error)}`);
-                }
-            })(); 
+        LogManager.info('Extension', 'Registering ChatViewProvider (Sidebar)...');
+        const chatProvider = new ChatViewProvider(context.extensionUri, context);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
+                webviewOptions: { retainContextWhenHidden: true }
+            })
+        );
+        if (!ChatViewProvider.instance) {
+            ChatViewProvider.instance = chatProvider;
+            LogManager.warn('Extension', 'ChatViewProvider.instance was not set by constructor, setting now.');
         }
-        logInfo("[Activate] Background server startup process initiated."); 
-    } catch (error) {
-        logError(`[Activate] Error initiating auto-start: ${getErrorMessage(error)}`);
-    }
-    // --- End Auto-start ---
-
-    // --- Set up server status listener FOR ABILITIES (Provider also listens) --- 
-    // We might need to pass abilities TO the provider if fetched here.
-    // Alternative: Provider handles fetching AND storage entirely.
-    // Let's assume the provider handles ability fetching based on its own status listener for now.
-    /* // Remove direct ability handling from activate? Provider does this now.
-    try {
-        serverManager.on('status', async (event: ServerStatusEvent) => {
-            logDebug(`[Activate Status Listener] Event: ${event.serverId} -> ${event.status}`);
-            // If the provider needs abilities fetched here, we could call a method on it:
-            // if (event.status === 'connected') {
-            //     chatWebviewProvider.fetchAbilitiesForServer(event.serverId);
-            // }
-             // Provider handles its own status updates and ability fetching internally
-        });
-    } catch (error: unknown) {
-        logError(`[Extension] Error setting up central status listener: ${getErrorMessage(error)}`);
-    }
-    */
-
-    // --- Register Commands --- 
-    logInfo('[Extension] Registering commands...');
-
-    // Command to open the chat panel (now calls the provider)
-    try {
-        context.subscriptions.push(vscode.commands.registerCommand('mcpClient.startChat', () => {
-            logInfo('[Extension] Command executed: mcpClient.startChat');
-            chatWebviewProvider.showPanel(); // Delegate to provider
-        }));
-        logInfo('[Extension] Registered command: mcpClient.startChat');
-    } catch (error: unknown) {
-        logError(`[Extension] Failed to register mcpClient.startChat: ${getErrorMessage(error)}`);
+        LogManager.info('Extension', 'ChatViewProvider (Sidebar) registered.');
+    } catch (error: any) {
+        console.error("!!! FAILED DURING ChatViewProvider INIT !!!", error);
+        LogManager.error('Extension', 'ChatViewProvider (Sidebar) registration failed', error);
+        vscode.window.showErrorMessage(`Sidebar Chat View failed to initialize: ${LogManager.getErrorMessage(error)}`);
     }
 
-    // Command to add a new server configuration
+    // Register Commands
     try {
-        const addServerDisposable = vscode.commands.registerCommand('mcpClient.addServer', async () => {
-            logInfo('[Extension] Command executed: mcpClient.addServer');
-            
-            const serverName = await vscode.window.showInputBox({ prompt: 'Enter server name', placeHolder: 'e.g., echo', ignoreFocusOut: true });
-            if (!serverName) return;
+        LogManager.info('Extension', 'Registering mcpServerManager.showDashboard...');
+        context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.showDashboard', () => {
+                LogManager.debug('Command', 'Executing mcpServerManager.showDashboard');
+                // Assuming createOrShow takes (context). Dashboard should get dependencies internally.
+                ServerDashboard.createOrShow(context);
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.showDashboard registered.');
 
-            const command = await vscode.window.showInputBox({ prompt: 'Enter command to run MCP server', placeHolder: 'e.g., npx', ignoreFocusOut: true });
-            if (!command) return;
-
-            const args = await vscode.window.showInputBox({ prompt: 'Enter command arguments (comma separated)', placeHolder: 'e.g., -y, @modelcontextprotocol/server-echo', ignoreFocusOut: true });
-            if (args === undefined) return; // Check for undefined in case user escapes
-
-            const envVars = await vscode.window.showInputBox({ prompt: 'Enter environment variables (JSON format)', placeHolder: 'e.g., {"GITHUB_TOKEN":"ghp_123abc"}', ignoreFocusOut: true });
-            let parsedEnv: Record<string, string> = {};
-            if (envVars) {
+        LogManager.info('Extension', 'Registering mcpServerManager.addServer...');
+        context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.addServer', async () => {
+                LogManager.debug('Command', 'Executing mcpServerManager.addServer');
                 try {
-                    const formattedEnvVars = formatEnvironmentVariables(envVars);
-                    parsedEnv = JSON.parse(formattedEnvVars);
-                    // Validate values are strings
-                    for (const key in parsedEnv) {
-                        if (typeof parsedEnv[key] !== 'string') parsedEnv[key] = String(parsedEnv[key]);
-                    }
-                    vscode.window.showInformationMessage('Environment variables parsed successfully.');
-                 } catch (jsonError) {
-                     const errorMsg = getErrorMessage(jsonError);
-                     logError(`Failed to parse env vars: ${errorMsg}`);
-                     vscode.window.showErrorMessage(`Invalid JSON for environment variables: ${errorMsg}. Please use {"KEY":"VALUE"} format.`);
-                     // Optionally re-prompt or return
-                     return; // Stop if env vars are invalid
-                 }
-            }
+                    const serverName = await vscode.window.showInputBox({
+                        prompt: 'Enter a unique name for the server',
+                        placeHolder: 'e.g., my-local-llm',
+                        ignoreFocusOut: true
+                    });
+                    if (!serverName) return;
+                    const command = await vscode.window.showInputBox({
+                        prompt: 'Enter the command to start the server',
+                        placeHolder: 'e.g., python -m my_server --port 8080',
+                        ignoreFocusOut: true
+                    });
+                    if (!command) return;
+                    const argsInput = await vscode.window.showInputBox({
+                        prompt: 'Enter command arguments (optional, space-separated)',
+                        placeHolder: '--verbose --model llama3',
+                        ignoreFocusOut: true
+                    });
+                    const args = argsInput ? parseArgumentsString(argsInput) : [];
 
-            const useShell = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Use shell for execution?', ignoreFocusOut: true });
-            if (!useShell) return;
+                    const serverConfig: ServerConfig = { type: 'stdio', command, args, shell: true, windowsHide: true, env: {} };
 
-            const windowsHide = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Hide window on Windows?', ignoreFocusOut: true });
-            if (!windowsHide) return;
+                    await configStorage.saveServerConfig(serverName, serverConfig);
+                    vscode.window.showInformationMessage(`Server "${serverName}" added successfully.`);
+                    ServerDashboard.currentPanel?.updateWebviewContent();
 
-            // Heartbeat option removed based on StdioServer capabilities
-            // const heartbeat = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: 'Use heartbeat?', ignoreFocusOut: true });
-            // if (!heartbeat) return;
-
-            const serverConfig: ServerConfig = {
-                type: 'stdio',
-                command,
-                args: args.split(',').map(arg => arg.trim()),
-                shell: useShell === 'Yes',
-                windowsHide: windowsHide === 'Yes',
-                env: parsedEnv
-                // heartbeatEnabled: heartbeat === 'Yes' // Heartbeat likely managed by server implementation
-            };
-
-            await configStorage.addServer(serverName, serverConfig);
-            serverManager.setDynamicConfig(serverName, serverConfig); // Inform manager immediately
-            vscode.window.showInformationMessage(`Server ${serverName} added successfully`);
-
-            // Update WebView via provider IF the panel is open
-            chatWebviewProvider.updateWebviewServerList(); // Add a public method to provider
-
-        });
-        context.subscriptions.push(addServerDisposable);
-        logInfo('[Extension] Registered command: mcpClient.addServer');
-    } catch (error: unknown) {
-        logError(`[Extension] Failed to register mcpClient.addServer: ${getErrorMessage(error)}`);
-    }
-
-    // Command to list and select a server to configure (simplified - just sets config)
-    try {
-        const configureServerDisposable = vscode.commands.registerCommand('mcpClient.configureServer', async () => {
-            logInfo('[Extension] Command executed: mcpClient.configureServer');
-            const serverNames = configStorage.getServerNames();
-            if (serverNames.length === 0) {
-                const addNew = await vscode.window.showInformationMessage('No servers found. Add one?', 'Yes', 'No');
-                if (addNew === 'Yes') await vscode.commands.executeCommand('mcpClient.addServer');
-                return;
-            }
-            const selectedServer = await vscode.window.showQuickPick([...serverNames, '+ Add New Server'], { placeHolder: 'Select a server to configure or add new', ignoreFocusOut: true });
-            if (!selectedServer) return;
-            if (selectedServer === '+ Add New Server') {
-                await vscode.commands.executeCommand('mcpClient.addServer');
-                return;
-            }
-            try {
-                const config = configStorage.getServer(selectedServer);
-                if (!config) throw new Error(`Config for "${selectedServer}" not found.`);
-                serverManager.setDynamicConfig(selectedServer, config); // Ensure manager has config
-                vscode.window.showInformationMessage(`Server "${selectedServer}" configuration loaded for use.`);
-                logInfo(`[Extension] Server "${selectedServer}" config loaded.`);
-                 // No direct action needed beyond loading config into manager? 
-                 // Perhaps ensure it's started?
-                await serverManager.ensureServerStarted(selectedServer); 
-                chatWebviewProvider.updateWebviewServerList(); // Update UI
-            } catch (error: any) {
-                const errorMsg = getErrorMessage(error);
-                logError(`[Extension] Failed to configure server "${selectedServer}": ${errorMsg}`);
-                vscode.window.showErrorMessage(`Failed to configure server "${selectedServer}": ${errorMsg}`);
-            }
-        });
-        context.subscriptions.push(configureServerDisposable);
-        logInfo('[Extension] Registered command: mcpClient.configureServer');
-    } catch (error: unknown) {
-        logError(`[Extension] Failed to register mcpClient.configureServer: ${getErrorMessage(error)}`);
-    }
-
-    // --- Server Deletion Command --- 
-    // New command that handles the full deletion logic, callable by provider
-    try {
-        const executeDeleteServerDisposable = vscode.commands.registerCommand('mcpClient.executeDeleteServer', async (serverId: string) => {
-            logInfo(`[Extension] Command executed: mcpClient.executeDeleteServer for ID: ${serverId}`);
-            if (!serverId) {
-                logError('[executeDeleteServer] No server ID provided.');
-                vscode.window.showErrorMessage('Cannot delete server: No server ID specified.');
-                return;
-            }
-            
-            // Optional: Double-check confirmation (though provider might do this)
-            // const confirmation = await vscode.window.showWarningMessage(...);
-            // if (confirmation !== 'Delete') return;
-            
-            logDebug(`[executeDeleteServer] Starting deletion process for: ${serverId}`);
-            try {
-                // 1. Stop the server process via manager
-                if (serverManager.hasServer(serverId)) {
-                    logDebug(`[executeDeleteServer] Stopping server process: ${serverId}`);
-                    await serverManager.stopServer(serverId);
-                    logInfo(`[executeDeleteServer] Stopped server process: ${serverId}`);
+                } catch (error) {
+                    const errorMessage = LogManager.getErrorMessage(error);
+                    vscode.window.showErrorMessage(`Failed to add server: ${errorMessage}`);
+                    LogManager.error('Command:addServer', 'Error adding server', error);
                 }
-                // 2. Remove configuration from manager (redundant if stopServer does it, but safe)
-                await serverManager.removeServerConfiguration(serverId);
-                logInfo(`[executeDeleteServer] Removed config from ServerManager for: ${serverId}`);
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.addServer registered.');
 
-                // 3. Remove from persistent storage
-                await configStorage.removeServer(serverId);
-                logInfo(`[executeDeleteServer] Removed config from ConfigStorage for: ${serverId}`);
+        LogManager.info('Extension', 'Registering mcpServerManager.removeServer...');
+        context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.removeServer', async (serverId?: string) => {
+                LogManager.debug('Command:removeServer', 'Executing', { serverId });
+                 try {
+                    if (!serverId) {
+                        const servers = configStorage.getAllServers(); // Assumes getAllServers exists
+                        const serverNames = Object.keys(servers);
+                        if (serverNames.length === 0) {
+                            vscode.window.showInformationMessage('No servers configured to remove.');
+                            return;
+                        }
+                        serverId = await vscode.window.showQuickPick(serverNames, { placeHolder: 'Select a server to remove' });
+                        if (!serverId) return;
+                    }
 
-                // 4. Notify provider/webview to update UI
-                chatWebviewProvider.handleServerRemoved(serverId); // Add method to provider
+                    const confirm = await vscode.window.showWarningMessage(
+                        `Are you sure you want to remove server "${serverId}"? This cannot be undone.`, { modal: true }, 'Yes' );
 
-                vscode.window.showInformationMessage(`Server "${serverId}" has been deleted.`);
-                logInfo(`[executeDeleteServer] Deletion completed successfully for: ${serverId}`);
+                    if (confirm === 'Yes' && serverId) {
+                        const success = await mcpServerManager.removeServerConfiguration(serverId);
+                        if (success) {
+                            vscode.window.showInformationMessage(`Server "${serverId}" removed.`);
+                            ServerDashboard.currentPanel?.updateWebviewContent();
+                        } else {
+                            vscode.window.showErrorMessage(`Failed to remove server "${serverId}". Check logs.`);
+                        }
+                    }
+                 } catch(error) {
+                     const errorMessage = LogManager.getErrorMessage(error);
+                     vscode.window.showErrorMessage(`Error removing server: ${errorMessage}`);
+                     LogManager.error('Command:removeServer', 'Failed to remove server', { serverId, error }); // Pass error obj as data
+                 }
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.removeServer registered.');
 
-            } catch (error) {
-                const errorMsg = getErrorMessage(error);
-                logError(`[executeDeleteServer] Error deleting server ${serverId}: ${errorMsg}`);
-                vscode.window.showErrorMessage(`Failed to delete server ${serverId}: ${errorMsg}`);
-                 // Notify provider of failure?
-                 chatWebviewProvider.handleServerDeletionError(serverId, errorMsg);
-            }
-        });
-        context.subscriptions.push(executeDeleteServerDisposable);
-        logInfo('[Extension] Registered command: mcpClient.executeDeleteServer');
+        LogManager.info('Extension', 'Registering mcpServerManager.startServer...');
+        context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.startServer', async (serverId?: string) => {
+                 LogManager.debug('Command:startServer', 'Executing', { serverId });
+                if (!serverId) { vscode.window.showWarningMessage('Server ID needed for startServer.'); return; }
+                 try {
+                     // This message is okay
+                     vscode.window.showInformationMessage(`Starting server "${serverId}"...`);
+                     
+                     // This awaits the process spawn, which might succeed even if the server errors out immediately
+                     await mcpServerManager.startServer(serverId); 
+                     
+                 } catch (err) {
+                     const message = LogManager.getErrorMessage(err);
+                     vscode.window.showErrorMessage(`Failed to start ${serverId}: ${message}`);
+                     LogManager.error('Command:startServer', `Failed to start server ${serverId}`, err);
+                 }
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.startServer registered.');
 
-    } catch (error: unknown) { 
-        logError(`[Extension] Failed to register mcpClient.executeDeleteServer: ${getErrorMessage(error)}`);
+        LogManager.info('Extension', 'Registering mcpServerManager.stopServer...');
+        context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.stopServer', async (serverId?: string) => {
+                LogManager.debug('Command:stopServer', 'Executing', { serverId }); // Changed component name & message
+                if (!serverId) { vscode.window.showWarningMessage('Server ID needed for stopServer.'); return; }
+                try {
+                    await mcpServerManager.stopServer(serverId);
+                    vscode.window.showInformationMessage(`Attempting to stop server "${serverId}"...`);
+                } catch (err) {
+                    const message = LogManager.getErrorMessage(err);
+                    vscode.window.showErrorMessage(`Failed to stop ${serverId}: ${message}`);
+                    LogManager.error('Command:stopServer', `Failed to stop server ${serverId}`, err); // Pass error obj as data
+                }
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.stopServer registered.');
+
+        LogManager.info('Extension', 'Registering mcpServerManager.refreshCapabilities...');
+         context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.refreshCapabilities', async (serverId?: string) => {
+                LogManager.debug('Command:refreshCapabilities', 'Executing', { serverId }); 
+                 if (!serverId) { vscode.window.showWarningMessage('Server ID needed for refreshCapabilities.'); return; }
+                 try {
+                     // This "Refreshing..." message is okay
+                     vscode.window.showInformationMessage(`Refreshing capabilities for "${serverId}"...`); 
+                     
+                     // This only sends the request
+                     await mcpServerManager.refreshCapabilities(serverId); 
+
+                 } catch (err) {
+                     const message = LogManager.getErrorMessage(err);
+                     vscode.window.showErrorMessage(`Failed to refresh capabilities for ${serverId}: ${message}`);
+                     LogManager.error('Command:refreshCapabilities', `Failed to refresh capabilities ${serverId}`, err); 
+                 }
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.refreshCapabilities registered.');
+
+        LogManager.info('Extension', 'Registering mcpServerManager.showLogs...');
+         context.subscriptions.push(
+            vscode.commands.registerCommand('mcpServerManager.showLogs', () => {
+                LogManager.debug('Command:showLogs', 'Executing'); // Changed component name & message
+                LogManager.showOutputChannel();
+            })
+        );
+        LogManager.info('Extension', 'mcpServerManager.showLogs registered.');
+
+    } catch (error: any) {
+         console.error("!!! FAILED DURING COMMAND REGISTRATION !!!", error);
+         LogManager.error('Extension', 'Command registration failed', error); // Pass error obj as data
+         vscode.window.showErrorMessage(`Command registration failed: ${LogManager.getErrorMessage(error)}`);
     }
 
-    // Command to *trigger* deletion via quick pick (calls the execute command)
-    try {
-        const deleteServerByNameDisposable = vscode.commands.registerCommand('mcpClient.deleteServerByName', async () => {
-            logInfo('[Extension] Command executed: mcpClient.deleteServerByName');
-            const serverNames = configStorage.getServerNames();
-            if (serverNames.length === 0) {
-                vscode.window.showInformationMessage('No servers available to delete.');
-                return;
-            }
-            const selectedServer = await vscode.window.showQuickPick(serverNames, { placeHolder: 'Select a server to delete', ignoreFocusOut: true });
-            if (!selectedServer) return; // User cancelled
-
-            const confirmation = await vscode.window.showWarningMessage(`Are you sure you want to delete "${selectedServer}"?`, { modal: true }, 'Delete', 'Cancel');
-            if (confirmation !== 'Delete') return;
-
-            // Execute the actual deletion command
-            await vscode.commands.executeCommand('mcpClient.executeDeleteServer', selectedServer);
-        });
-        context.subscriptions.push(deleteServerByNameDisposable);
-        logInfo('[Extension] Registered command: mcpClient.deleteServerByName');
-    } catch (error: unknown) {
-        logError(`[Extension] Failed to register mcpClient.deleteServerByName: ${getErrorMessage(error)}`);
-    }
-
-    // Remove older/specific deletion commands if executeDeleteServer covers all cases
-     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.deleteCurrentServer', ...));
-     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.deleteGithubServer', ...));
-     // context.subscriptions.push(vscode.commands.registerCommand('mcpClient.removeServer', ...)); // May be redundant
-
-
-    // Monitor configuration changes (optional, provider might handle UI updates)
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('mcpClient')) {
-                logInfo('[Extension] Configuration changed (mcpClient section affected).');
-                // Potentially trigger a refresh in the provider
-                chatWebviewProvider.handleConfigChange(); // Add method to provider
-            }
-        })
-    );
-
-    // Register cleanup function
+     // Disposable for cleanup on extension deactivation
     context.subscriptions.push({
         dispose: () => {
-            logInfo('[Extension] Disposing extension resources.');
-            // Provider disposal is handled by adding it to subscriptions
-            if (McpServerManager.getInstance) {
-                McpServerManager.getInstance().dispose();
+            LogManager.info('Extension', 'Deactivating extension, disposing McpServerManager...');
+            try {
+                mcpServerManager?.dispose(); // Use optional chaining
+                LogManager.info('Extension', 'McpServerManager disposed.');
+            } catch (disposeError: any) {
+                 LogManager.error('Extension', `Error disposing McpServerManager`, disposeError); // Pass error obj as data
             }
         }
     });
 
-    logInfo('[Extension] MCP Client extension activation completed.');
-    isExtensionActivated = true;
+    LogManager.info('Extension', 'MCP Manager Activation Complete.');
 }
 
 // Deactivate function
 export function deactivate() {
-    logInfo('[Extension] Deactivating extension.');
-    // Provider and output channel disposal are handled via context.subscriptions
-    // Clean up server manager explicitly if needed (its dispose might be in provider disposal)
-    if (serverManager && typeof serverManager.dispose === 'function') {
-        // serverManager.dispose(); // Potentially redundant if provider disposes it
+    console.log('MCP Manager Deactivating...');
+    // Use static LogManager method, check if logger might be disposed already if necessary
+    try {
+        LogManager.info('Extension', 'Deactivate function called.');
+    } catch(e) {
+        // LogManager might be unavailable during shutdown
+        console.error("Error logging deactivation", e);
     }
-    isExtensionActivated = false;
-    logInfo('[Extension] Deactivation sequence finished.');
 }
 
-// --- Removed Functions (Moved to Provider) ---
-// handleSendMessage(...)
-// updateWebviewWithServerList(...)
-// openChatPanel(...)
-// executeServerDeletion(...) -> Logic moved to mcpClient.executeDeleteServer command
-// determineTargetAndFormatMessage(...)
-// setupChatPanelListeners(...)
-// sendErrorToWebview(...)
+// --- Refactored handleSendMessage function ---
+export async function handleSendMessage(message: { text: string }, webviewProvider: ChatViewProvider) {
+    const componentName = 'handleSendMessage(Anthropic)';
+    LogManager.debug(componentName, `Triggered via ChatViewProvider`, message);
+
+    if (!configStorage || !mcpServerManager) {
+        LogManager.error(componentName, "Core services not initialized!");
+        webviewProvider.updateChat("Error: Core services not ready.");
+        return;
+    }
+
+    // --- Get Anthropic API Key & Initialize Client (Keep at the top) ---
+    const config = vscode.workspace.getConfiguration('mcpServerManager');
+    const apiKey = config.get<string>('anthropicApiKey');
+    if (!apiKey) {
+        LogManager.error(componentName, 'Anthropic API Key not configured.');
+        vscode.window.showErrorMessage('Anthropic API Key is not configured. Please set it in VS Code settings (MCP Server Manager > Anthropic Api Key).');
+        webviewProvider.updateChat("Error: Anthropic API Key not configured.");
+        return;
+    }
+    if (!anthropic) {
+        try {
+            anthropic = new Anthropic({
+                apiKey: apiKey,
+                timeout: 60 * 1000,
+            });
+            LogManager.info(componentName, 'Anthropic client initialized.');
+        } catch (err: any) {
+             LogManager.error(componentName, 'Failed to initialize Anthropic client', err);
+             webviewProvider.updateChat(`Error initializing Anthropic client: ${LogManager.getErrorMessage(err)}`);
+             return;
+        }
+    }
+
+    try {
+        // --- Initial Anthropic Call Setup ---
+        const messages: MessageParam[] = [{ role: "user", content: message.text }];
+        LogManager.debug(componentName, 'Preparing initial call to Anthropic');
+        webviewProvider.updateChat("Thinking..."); // Indicate processing
+
+        // --- MODIFICATION: Gather Tools JUST BEFORE the API call ---
+        const availableTools: Tool[] = [];
+        const serverNames = configStorage.getServerNames();
+        LogManager.debug(componentName, 'Gathering tools from currently connected servers...');
+
+        for (const serverId of serverNames) {
+            const serverInstance = mcpServerManager.getServer(serverId);
+            // Check CURRENT status right before the API call
+            if (serverInstance?.getStatus() === 'connected') {
+                const manifest = configStorage.getServerCapabilities(serverId);
+                if (manifest?.capabilities) {
+                    LogManager.debug(componentName, `Adding tools from connected server: ${serverId}`);
+                    manifest.capabilities.forEach((cap: CapabilityItem) => {
+                        const prefixedToolName = `${serverId}__${cap.name}`;
+
+                        // --- FIX: Ensure valid input_schema structure ---
+                        let finalInputSchema: Tool['input_schema'] = { type: 'object', properties: {} }; // Default empty object schema
+
+                        if (cap.inputSchema) {
+                            // Check if it already has a 'type' property (likely a valid schema)
+                            if (typeof cap.inputSchema === 'object' && 'type' in cap.inputSchema) {
+                                // Assume it's already a valid schema structure
+                                finalInputSchema = cap.inputSchema as Tool['input_schema'];
+                            }
+                            // Check if it's just a Record (treat as properties)
+                            else if (typeof cap.inputSchema === 'object' && !('type' in cap.inputSchema)) {
+                                finalInputSchema = {
+                                    type: 'object',
+                                    properties: cap.inputSchema as Record<string, any>,
+                                    // We don't know required fields here, so omit 'required' unless provided separately
+                                };
+                            }
+                             // Add more checks if other formats are possible for cap.inputSchema
+                        }
+                        // --- END FIX ---
+
+                        availableTools.push({
+                            name: prefixedToolName,
+                            description: cap.description || `Tool ${cap.name} on server ${serverId}`,
+                            input_schema: finalInputSchema, // Use the validated/constructed schema
+                        });
+                    });
+                } else {
+                     LogManager.debug(componentName, `Connected server ${serverId} reported no capabilities.`);
+                }
+            } else {
+                 LogManager.debug(componentName, `Skipping tools for server ${serverId} (Status: ${serverInstance?.getStatus() ?? 'Not Found'})`);
+            }
+        }
+
+        if (availableTools.length === 0) {
+            LogManager.warn(componentName, 'No tools available from connected servers AT THIS TIME.');
+            // Inform the user maybe? Or proceed without tools.
+            // Let's proceed without tools, Anthropic will respond naturally.
+        } else {
+             LogManager.debug(componentName, `Gathered ${availableTools.length} tools for Anthropic call`, { toolNames: availableTools.map(t => t.name) });
+        }
+        // --- END TOOL GATHERING MODIFICATION ---
+
+
+        // --- Make the Initial Anthropic Call ---
+        let response = await anthropic.messages.create({
+            model: "claude-3-5-sonnet-20240620",
+            max_tokens: 1024,
+            messages: messages,
+            tools: availableTools.length > 0 ? availableTools : undefined, // Pass tools if gathered
+        });
+
+        LogManager.debug(componentName, 'Received initial response from Anthropic', { stopReason: response.stop_reason });
+
+        // --- Handle Potential Tool Calls (Logic remains the same) ---
+        while (response.stop_reason === "tool_use" && response.content.some((c: any) => c.type === "tool_use")) {
+            const toolUses = response.content.filter((c: any): c is ToolUseBlock => c.type === "tool_use");
+            const toolResults: ToolResultBlockParam[] = [];
+
+            messages.push({ role: "assistant", content: response.content }); // Add assistant's turn (including tool_use requests)
+
+            for (const toolUse of toolUses) {
+                const fullToolName = toolUse.name;
+                const toolInput = toolUse.input;
+                const toolUseId = toolUse.id;
+
+                // --- MODIFICATION: Parse Server ID and Tool Name using double underscore ---
+                const nameParts = fullToolName.split('__'); // Split by double underscore
+                if (nameParts.length < 2) {
+                    LogManager.error(componentName, `Invalid tool name format from Anthropic: ${fullToolName}. Expected 'serverId__toolName'.`);
+                    toolResults.push({ type: "tool_result", tool_use_id: toolUseId, content: `Error: Invalid tool name format received: ${fullToolName}` });
+                    continue;
+                }
+                const targetServerId = nameParts[0];
+                const actualToolName = nameParts.slice(1).join('__'); // Re-join if tool name contained '__'
+                // --- END MODIFICATION ---
+
+                LogManager.info(componentName, `Anthropic requested tool call`, { serverId: targetServerId, toolName: actualToolName, input: toolInput });
+                webviewProvider.updateChat(`Calling tool ${actualToolName} on ${targetServerId}...`);
+
+                 // --- Execute Tool Call via McpServerManager ---
+                let toolOutputContent: string;
+                let isError = false;
+                 try {
+                    // Re-ensure server is started (good practice)
+                    await mcpServerManager.ensureServerStarted(targetServerId);
+
+                    const mcpRequestPayload: ModelRequest = {
+                        prompt: JSON.stringify({ tool: actualToolName, params: toolInput || {} }),
+                        model: targetServerId,
+                    };
+
+                    const responseString = await mcpServerManager.sendMessage(targetServerId, mcpRequestPayload);
+                    LogManager.info(componentName, `Raw response from MCP server ${targetServerId}: ${responseString}`);
+
+                    // Attempt to parse the server response. Assume it might be JSON containing the actual result.
+                    try {
+                         const serverResponseJson = JSON.parse(responseString);
+                         // Look for common output patterns (adapt as needed based on actual server responses)
+                         if (serverResponseJson.content && Array.isArray(serverResponseJson.content) && serverResponseJson.content[0]?.text) {
+                            toolOutputContent = serverResponseJson.content[0].text;
+                         } else if (typeof serverResponseJson === 'object') {
+                            // Fallback: stringify the whole JSON object
+                            toolOutputContent = JSON.stringify(serverResponseJson);
+                         } else {
+                            toolOutputContent = responseString; // Use raw string if not parseable or unexpected structure
+                         }
+                         isError = serverResponseJson.isError === true; // Check if server explicitly marked it as error
+
+                    } catch (parseError) {
+                        LogManager.warn(componentName, `Failed to parse JSON response from MCP server, using raw string.`, { responseString, parseError });
+                        toolOutputContent = responseString; // Use the raw response if JSON parsing fails
+                    }
+
+                 } catch (execError) {
+                    LogManager.error(componentName, `Error executing tool ${actualToolName} on ${targetServerId}`, execError);
+                    toolOutputContent = `Error: ${LogManager.getErrorMessage(execError)}`;
+                    isError = true;
+                 }
+
+                // Add the result back for the next Anthropic call
+                 toolResults.push({
+                    type: "tool_result",
+                    tool_use_id: toolUseId,
+                    content: toolOutputContent, // Send the extracted/raw content
+                    is_error: isError, // Indicate if the tool execution failed
+                });
+            } // End loop through toolUses
+
+            // Add the tool results to messages
+            messages.push({ role: "user", content: toolResults });
+
+            // Call Anthropic again
+             LogManager.debug(componentName, 'Making follow-up call to Anthropic with tool results');
+             webviewProvider.updateChat("Processing tool results...");
+             response = await anthropic.messages.create({
+                model: "claude-3-5-sonnet-20240620",
+                max_tokens: 1024,
+                messages: messages,
+                tools: availableTools.length > 0 ? availableTools : undefined,
+            });
+            LogManager.debug(componentName, 'Received follow-up response from Anthropic', { stopReason: response.stop_reason });
+
+        } // End while loop for tool calls
+
+        // --- Process Final Response ---
+        let finalText = "";
+        if (response.content.length > 0 && response.content[0].type === "text") {
+            finalText = response.content[0].text;
+        } else if (response.stop_reason === 'max_tokens') {
+             finalText = "[Response truncated due to maximum token limit]";
+             LogManager.warn(componentName, 'Anthropic response truncated due to max_tokens');
+        } else {
+             finalText = "[Received non-text final response or empty response]";
+             LogManager.warn(componentName, 'Anthropic final response was not text or was empty', { response });
+        }
+
+        webviewProvider.updateChat(finalText);
+
+    } catch (error: any) {
+        LogManager.error(componentName, `Unhandled error in handleSendMessage`, error);
+        // Check for Anthropic specific errors
+        if (error instanceof Anthropic.APIError) {
+             webviewProvider.updateChat(`An API error occurred (Status: ${error.status}): ${error.message}`);
+        } else {
+             webviewProvider.updateChat(`An unexpected error occurred: ${LogManager.getErrorMessage(error)}`);
+        }
+    }
+}
 

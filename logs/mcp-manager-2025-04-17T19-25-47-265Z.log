@@ -1,0 +1,233 @@
+[2025-04-17T19:25:47.265Z] [INFO] [LogManager] - Logging initialized. Log file: c:\Users\zengn\mcp-config-assistant\mcp-client\logs\mcp-manager-2025-04-17T19-25-47-265Z.log
+[2025-04-17T19:25:47.266Z] [INFO] [Extension] - MCP Server Manager activating...
+[2025-04-17T19:25:47.266Z] [DEBUG] [Extension] - Initializing ConfigStorage...
+[2025-04-17T19:25:47.273Z] [INFO] [ConfigStorage] - Loaded 3 server configurations from c:\Users\zengn\AppData\Roaming\Code\User\globalStorage\undefined_publisher.mcp-server-manager\servers.json
+[2025-04-17T19:25:47.274Z] [DEBUG] [ConfigStorage] - Capability cache loaded/initialized. {"cacheSize":0}
+[2025-04-17T19:25:47.274Z] [DEBUG] [Extension] - Initializing McpServerManager...
+[2025-04-17T19:25:47.274Z] [DEBUG] [Extension] - Setting up McpServerManager status listener...
+[2025-04-17T19:25:47.274Z] [INFO] [Extension] - McpServerManager initialized. Checking auto-start...
+[2025-04-17T19:25:47.275Z] [INFO] [Extension] - Auto-start enabled. Starting configured servers...
+[2025-04-17T19:25:47.275Z] [INFO] [Extension] - Attempting to auto-start servers: github, time, filesystem
+[2025-04-17T19:25:47.275Z] [INFO] [McpServerManager] - Creating new server instance for github...
+[2025-04-17T19:25:47.276Z] [INFO] [McpServerManager] - Starting server process for github...
+[2025-04-17T19:25:47.276Z] [INFO] [[StdioServer-github] Starting server process... Command: npx -y @modelcontextprotocol/server-github, Args: ] - undefined
+[2025-04-17T19:25:47.277Z] [INFO] [[StdioServer-github] Status changing from disconnected to connecting] - undefined
+[2025-04-17T19:25:47.278Z] [INFO] [McpServerManager] - Handling status change for github: connecting {}
+[2025-04-17T19:25:47.278Z] [INFO] [Extension] - Server Status Event: github -> connecting {"statusEnum":"connecting"}
+[2025-04-17T19:25:47.285Z] [INFO] [[StdioServer-github] Process spawned with PID: 4120] - undefined
+[2025-04-17T19:25:47.285Z] [INFO] [McpServerManager] - Creating new server instance for time...
+[2025-04-17T19:25:47.286Z] [INFO] [McpServerManager] - Starting server process for time...
+[2025-04-17T19:25:47.286Z] [INFO] [[StdioServer-time] Starting server process... Command: uvx mcp-server-time, Args: --local-timezone=Asia/Shanghai] - undefined
+[2025-04-17T19:25:47.286Z] [INFO] [[StdioServer-time] Status changing from disconnected to connecting] - undefined
+[2025-04-17T19:25:47.287Z] [INFO] [McpServerManager] - Handling status change for time: connecting {}
+[2025-04-17T19:25:47.287Z] [INFO] [Extension] - Server Status Event: time -> connecting {"statusEnum":"connecting"}
+[2025-04-17T19:25:47.293Z] [INFO] [[StdioServer-time] Process spawned with PID: 19680] - undefined
+[2025-04-17T19:25:47.294Z] [INFO] [McpServerManager] - Creating new server instance for filesystem...
+[2025-04-17T19:25:47.294Z] [INFO] [McpServerManager] - Starting server process for filesystem...
+[2025-04-17T19:25:47.295Z] [INFO] [[StdioServer-filesystem] Starting server process... Command: npx -y @modelcontextprotocol/server-filesystem C:\Users\zengn\Desktop D:\project, Args: ] - undefined
+[2025-04-17T19:25:47.295Z] [INFO] [[StdioServer-filesystem] Status changing from disconnected to connecting] - undefined
+[2025-04-17T19:25:47.295Z] [INFO] [McpServerManager] - Handling status change for filesystem: connecting {}
+[2025-04-17T19:25:47.296Z] [INFO] [Extension] - Server Status Event: filesystem -> connecting {"statusEnum":"connecting"}
+[2025-04-17T19:25:47.302Z] [INFO] [[StdioServer-filesystem] Process spawned with PID: 24172] - undefined
+[2025-04-17T19:25:47.303Z] [INFO] [Extension] - Core services initialization block finished.
+[2025-04-17T19:25:47.303Z] [INFO] [Extension] - Registering ChatViewProvider (Sidebar)...
+[2025-04-17T19:25:47.304Z] [INFO] [Extension] - ChatViewProvider (Sidebar) registered.
+[2025-04-17T19:25:47.304Z] [INFO] [Extension] - Registering mcpServerManager.showDashboard...
+[2025-04-17T19:25:47.305Z] [INFO] [Extension] - mcpServerManager.showDashboard registered.
+[2025-04-17T19:25:47.305Z] [INFO] [Extension] - Registering mcpServerManager.addServer...
+[2025-04-17T19:25:47.305Z] [INFO] [Extension] - mcpServerManager.addServer registered.
+[2025-04-17T19:25:47.306Z] [INFO] [Extension] - Registering mcpServerManager.removeServer...
+[2025-04-17T19:25:47.306Z] [INFO] [Extension] - mcpServerManager.removeServer registered.
+[2025-04-17T19:25:47.306Z] [INFO] [Extension] - Registering mcpServerManager.startServer...
+[2025-04-17T19:25:47.306Z] [INFO] [Extension] - mcpServerManager.startServer registered.
+[2025-04-17T19:25:47.307Z] [INFO] [Extension] - Registering mcpServerManager.stopServer...
+[2025-04-17T19:25:47.307Z] [INFO] [Extension] - mcpServerManager.stopServer registered.
+[2025-04-17T19:25:47.307Z] [INFO] [Extension] - Registering mcpServerManager.refreshCapabilities...
+[2025-04-17T19:25:47.308Z] [INFO] [Extension] - mcpServerManager.refreshCapabilities registered.
+[2025-04-17T19:25:47.308Z] [INFO] [Extension] - Registering mcpServerManager.showLogs...
+[2025-04-17T19:25:47.308Z] [INFO] [Extension] - mcpServerManager.showLogs registered.
+[2025-04-17T19:25:47.309Z] [INFO] [Extension] - MCP Manager Activation Complete.
+[2025-04-17T19:25:47.318Z] [INFO] [ChatViewProvider] - --- MCP ChatViewProvider resolving view ---
+[2025-04-17T19:25:47.318Z] [DEBUG] [ChatViewProvider] - Resolving webview view.
+[2025-04-17T19:25:47.320Z] [DEBUG] [ChatViewProvider] - Webview view resolved successfully.
+[2025-04-17T19:25:47.320Z] [DEBUG] [Command] - Executing mcpServerManager.showDashboard
+[2025-04-17T19:25:47.321Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:47.322Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:47.322Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:47.443Z] [DEBUG] [[StdioServer-github] Process started, initiating capability negotiation.] - undefined
+[2025-04-17T19:25:47.444Z] [INFO] [StdioServer] - [github] Beginning capability negotiation.
+[2025-04-17T19:25:47.444Z] [WARN] [[StdioServer-github] Attempting to send message while status is connecting.] - undefined
+[2025-04-17T19:25:47.445Z] [DEBUG] [[StdioServer-github][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917947444}] - undefined
+[2025-04-17T19:25:47.446Z] [INFO] [McpServerManager] - Server github process start initiated.
+[2025-04-17T19:25:47.446Z] [DEBUG] [[StdioServer-time] Process started, initiating capability negotiation.] - undefined
+[2025-04-17T19:25:47.446Z] [INFO] [StdioServer] - [time] Beginning capability negotiation.
+[2025-04-17T19:25:47.447Z] [WARN] [[StdioServer-time] Attempting to send message while status is connecting.] - undefined
+[2025-04-17T19:25:47.447Z] [DEBUG] [[StdioServer-time][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917947447}] - undefined
+[2025-04-17T19:25:47.448Z] [INFO] [McpServerManager] - Server time process start initiated.
+[2025-04-17T19:25:47.448Z] [DEBUG] [[StdioServer-filesystem] Process started, initiating capability negotiation.] - undefined
+[2025-04-17T19:25:47.448Z] [INFO] [StdioServer] - [filesystem] Beginning capability negotiation.
+[2025-04-17T19:25:47.448Z] [WARN] [[StdioServer-filesystem] Attempting to send message while status is connecting.] - undefined
+[2025-04-17T19:25:47.449Z] [DEBUG] [[StdioServer-filesystem][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917947448}] - undefined
+[2025-04-17T19:25:47.450Z] [INFO] [McpServerManager] - Server filesystem process start initiated.
+[2025-04-17T19:25:52.447Z] [WARN] [StdioServer] - [github] Capability negotiation timed out.
+[2025-04-17T19:25:52.447Z] [INFO] [[StdioServer-github] Status changing from connecting to connected] - undefined
+[2025-04-17T19:25:52.448Z] [INFO] [McpServerManager] - Handling status change for github: connected {}
+[2025-04-17T19:25:52.448Z] [INFO] [McpServerManager] - Requesting capability refresh for github...
+[2025-04-17T19:25:52.448Z] [INFO] [StdioServer] - [github] Sending capability refresh request.
+[2025-04-17T19:25:52.448Z] [DEBUG] [[StdioServer-github][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917952448}] - undefined
+[2025-04-17T19:25:52.449Z] [INFO] [Extension] - Server Status Event: github -> connected {"statusEnum":"connected"}
+[2025-04-17T19:25:52.449Z] [INFO] [ChatViewProvider] - Handling status update for github: connected
+[2025-04-17T19:25:52.449Z] [DEBUG] [ServerDashboard] - Handling status update for github: connected
+[2025-04-17T19:25:52.450Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.450Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.450Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.450Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: github -> connected
+[2025-04-17T19:25:52.451Z] [DEBUG] [ServerDashboard] - Server status event received for github: connected
+[2025-04-17T19:25:52.451Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.451Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.451Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.452Z] [INFO] [[StdioServer-github] Server connection finalized.] - undefined
+[2025-04-17T19:25:52.453Z] [DEBUG] [StdioServer] - [github] Capability refresh request sent.
+[2025-04-17T19:25:52.453Z] [INFO] [McpServerManager] - Capability refresh requested for github.
+[2025-04-17T19:25:52.566Z] [WARN] [StdioServer] - [time] Capability negotiation timed out.
+[2025-04-17T19:25:52.567Z] [INFO] [[StdioServer-time] Status changing from connecting to connected] - undefined
+[2025-04-17T19:25:52.567Z] [INFO] [McpServerManager] - Handling status change for time: connected {}
+[2025-04-17T19:25:52.567Z] [INFO] [McpServerManager] - Requesting capability refresh for time...
+[2025-04-17T19:25:52.567Z] [INFO] [StdioServer] - [time] Sending capability refresh request.
+[2025-04-17T19:25:52.568Z] [DEBUG] [[StdioServer-time][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917952568}] - undefined
+[2025-04-17T19:25:52.568Z] [INFO] [Extension] - Server Status Event: time -> connected {"statusEnum":"connected"}
+[2025-04-17T19:25:52.568Z] [INFO] [ChatViewProvider] - Handling status update for time: connected
+[2025-04-17T19:25:52.569Z] [DEBUG] [ServerDashboard] - Handling status update for time: connected
+[2025-04-17T19:25:52.569Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.569Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.570Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.570Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: time -> connected
+[2025-04-17T19:25:52.570Z] [DEBUG] [ServerDashboard] - Server status event received for time: connected
+[2025-04-17T19:25:52.570Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.571Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.571Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.571Z] [INFO] [[StdioServer-time] Server connection finalized.] - undefined
+[2025-04-17T19:25:52.572Z] [WARN] [StdioServer] - [filesystem] Capability negotiation timed out.
+[2025-04-17T19:25:52.572Z] [INFO] [[StdioServer-filesystem] Status changing from connecting to connected] - undefined
+[2025-04-17T19:25:52.572Z] [INFO] [McpServerManager] - Handling status change for filesystem: connected {}
+[2025-04-17T19:25:52.572Z] [INFO] [McpServerManager] - Requesting capability refresh for filesystem...
+[2025-04-17T19:25:52.572Z] [INFO] [StdioServer] - [filesystem] Sending capability refresh request.
+[2025-04-17T19:25:52.573Z] [DEBUG] [[StdioServer-filesystem][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917952573}] - undefined
+[2025-04-17T19:25:52.573Z] [INFO] [Extension] - Server Status Event: filesystem -> connected {"statusEnum":"connected"}
+[2025-04-17T19:25:52.573Z] [INFO] [ChatViewProvider] - Handling status update for filesystem: connected
+[2025-04-17T19:25:52.573Z] [DEBUG] [ServerDashboard] - Handling status update for filesystem: connected
+[2025-04-17T19:25:52.573Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.574Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.574Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.574Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: filesystem -> connected
+[2025-04-17T19:25:52.574Z] [DEBUG] [ServerDashboard] - Server status event received for filesystem: connected
+[2025-04-17T19:25:52.575Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:52.575Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:52.575Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:52.575Z] [INFO] [[StdioServer-filesystem] Server connection finalized.] - undefined
+[2025-04-17T19:25:52.582Z] [DEBUG] [StdioServer] - [time] Capability refresh request sent.
+[2025-04-17T19:25:52.583Z] [INFO] [McpServerManager] - Capability refresh requested for time.
+[2025-04-17T19:25:52.583Z] [DEBUG] [StdioServer] - [filesystem] Capability refresh request sent.
+[2025-04-17T19:25:52.583Z] [INFO] [McpServerManager] - Capability refresh requested for filesystem.
+[2025-04-17T19:25:58.767Z] [INFO] [McpServerManager] - Requesting capability refresh for filesystem...
+[2025-04-17T19:25:58.768Z] [INFO] [StdioServer] - [filesystem] Sending capability refresh request.
+[2025-04-17T19:25:58.768Z] [DEBUG] [[StdioServer-filesystem][stdin] Sending: {"type":"capability_request","client":"mcp-client","version":"1.0.0","timestamp":1744917958768}] - undefined
+[2025-04-17T19:25:58.769Z] [DEBUG] [StdioServer] - [filesystem] Capability refresh request sent.
+[2025-04-17T19:25:58.769Z] [INFO] [McpServerManager] - Capability refresh requested for filesystem.
+[2025-04-17T19:25:59.312Z] [ERROR] [[StdioServer-filesystem][stderr] Secure MCP Filesystem Server running on stdio] - undefined
+[2025-04-17T19:25:59.317Z] [ERROR] [McpServerManager] - Error reported by server filesystem: Secure MCP Filesystem Server running on stdio {"stack":"Error: Secure MCP Filesystem Server running on stdio\n    at Socket.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\StdioServer.ts:159:36)\n    at Socket.emit (node:events:518:28)\n    at Socket.emit (node:domain:489:12)\n    at addChunk (node:internal/streams/readable:561:12)\n    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)\n    at Socket.Readable.push (node:internal/streams/readable:392:5)\n    at Pipe.onStreamRead (node:internal/stream_base_commons:191:23)\n    at Pipe.callbackTrampoline (node:internal/async_hooks:130:17)"}
+[2025-04-17T19:25:59.317Z] [INFO] [McpServerManager] - Handling status change for filesystem: error {"error":"Secure MCP Filesystem Server running on stdio"}
+[2025-04-17T19:25:59.317Z] [WARN] [McpServerManager] - Server filesystem disconnected unexpectedly or errored. Removing instance.
+[2025-04-17T19:25:59.318Z] [INFO] [StdioServer] - [filesystem] Disposing server instance.
+[2025-04-17T19:25:59.318Z] [DEBUG] [StdioServer] - [filesystem] Cleared response queue timers and rejected pending requests.
+[2025-04-17T19:25:59.318Z] [DEBUG] [StdioServer] - [filesystem] Removing process listeners and attempting to kill PID: 24172
+[2025-04-17T19:25:59.319Z] [DEBUG] [StdioServer] - [filesystem PID: 24172] process.kill('SIGTERM') called, result: true
+[2025-04-17T19:25:59.320Z] [INFO] [[StdioServer-filesystem] Status changing from connected to disconnected] - undefined
+[2025-04-17T19:25:59.320Z] [INFO] [McpServerManager] - Handling status change for filesystem: disconnected {}
+[2025-04-17T19:25:59.320Z] [WARN] [McpServerManager] - Server filesystem disconnected unexpectedly or errored. Removing instance.
+[2025-04-17T19:25:59.321Z] [DEBUG] [StdioServer] - [filesystem] Dispose called but already disposed.
+[2025-04-17T19:25:59.321Z] [INFO] [Extension] - Server Status Event: filesystem -> disconnected {"statusEnum":"disconnected"}
+[2025-04-17T19:25:59.321Z] [INFO] [ChatViewProvider] - Handling status update for filesystem: disconnected
+[2025-04-17T19:25:59.322Z] [DEBUG] [ServerDashboard] - Handling status update for filesystem: disconnected
+[2025-04-17T19:25:59.322Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.322Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.323Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.323Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: filesystem -> disconnected
+[2025-04-17T19:25:59.323Z] [DEBUG] [ServerDashboard] - Server status event received for filesystem: disconnected
+[2025-04-17T19:25:59.324Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.324Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.324Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.324Z] [INFO] [StdioServer] - [filesystem] Disposal complete.
+[2025-04-17T19:25:59.325Z] [INFO] [Extension] - Server Status Event: filesystem -> error {"error":"Secure MCP Filesystem Server running on stdio","statusEnum":"error"}
+[2025-04-17T19:25:59.325Z] [INFO] [ChatViewProvider] - Handling status update for filesystem: error
+[2025-04-17T19:25:59.325Z] [DEBUG] [ServerDashboard] - Handling status update for filesystem: error
+[2025-04-17T19:25:59.325Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.326Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.326Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.333Z] [ERROR] [ServerDashboard] - Error from server filesystem: Secure MCP Filesystem Server running on stdio {"stack":"Error: Secure MCP Filesystem Server running on stdio\n    at McpServerManager.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\extension.ts:74:73)\n    at McpServerManager.emit (node:events:530:35)\n    at McpServerManager.emit (node:domain:489:12)\n    at McpServerManager.handleServerStatusChange (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\McpServerManager.ts:942:14)\n    at StdioServer.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\McpServerManager.ts:798:19)\n    at StdioServer.emit (node:events:518:28)\n    at StdioServer.emit (node:domain:489:12)\n    at Socket.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\StdioServer.ts:159:22)\n    at Socket.emit (node:events:518:28)\n    at Socket.emit (node:domain:489:12)\n    at addChunk (node:internal/streams/readable:561:12)\n    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)\n    at Socket.Readable.push (node:internal/streams/readable:392:5)\n    at Pipe.onStreamRead (node:internal/stream_base_commons:191:23)\n    at Pipe.callbackTrampoline (node:internal/async_hooks:130:17)"}
+[2025-04-17T19:25:59.334Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: filesystem -> error
+[2025-04-17T19:25:59.334Z] [DEBUG] [ServerDashboard] - Server status event received for filesystem: error
+[2025-04-17T19:25:59.335Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.335Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.335Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.354Z] [ERROR] [[StdioServer-github][stderr] GitHub MCP Server running on stdio] - undefined
+[2025-04-17T19:25:59.354Z] [ERROR] [McpServerManager] - Error reported by server github: GitHub MCP Server running on stdio {"stack":"Error: GitHub MCP Server running on stdio\n    at Socket.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\StdioServer.ts:159:36)\n    at Socket.emit (node:events:518:28)\n    at Socket.emit (node:domain:489:12)\n    at addChunk (node:internal/streams/readable:561:12)\n    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)\n    at Socket.Readable.push (node:internal/streams/readable:392:5)\n    at Pipe.onStreamRead (node:internal/stream_base_commons:191:23)\n    at Pipe.callbackTrampoline (node:internal/async_hooks:130:17)"}
+[2025-04-17T19:25:59.355Z] [INFO] [McpServerManager] - Handling status change for github: error {"error":"GitHub MCP Server running on stdio"}
+[2025-04-17T19:25:59.355Z] [WARN] [McpServerManager] - Server github disconnected unexpectedly or errored. Removing instance.
+[2025-04-17T19:25:59.355Z] [INFO] [StdioServer] - [github] Disposing server instance.
+[2025-04-17T19:25:59.356Z] [DEBUG] [StdioServer] - [github] Cleared response queue timers and rejected pending requests.
+[2025-04-17T19:25:59.356Z] [DEBUG] [StdioServer] - [github] Removing process listeners and attempting to kill PID: 4120
+[2025-04-17T19:25:59.356Z] [DEBUG] [StdioServer] - [github PID: 4120] process.kill('SIGTERM') called, result: true
+[2025-04-17T19:25:59.357Z] [INFO] [[StdioServer-github] Status changing from connected to disconnected] - undefined
+[2025-04-17T19:25:59.357Z] [INFO] [McpServerManager] - Handling status change for github: disconnected {}
+[2025-04-17T19:25:59.358Z] [WARN] [McpServerManager] - Server github disconnected unexpectedly or errored. Removing instance.
+[2025-04-17T19:25:59.358Z] [DEBUG] [StdioServer] - [github] Dispose called but already disposed.
+[2025-04-17T19:25:59.358Z] [INFO] [Extension] - Server Status Event: github -> disconnected {"statusEnum":"disconnected"}
+[2025-04-17T19:25:59.358Z] [INFO] [ChatViewProvider] - Handling status update for github: disconnected
+[2025-04-17T19:25:59.359Z] [DEBUG] [ServerDashboard] - Handling status update for github: disconnected
+[2025-04-17T19:25:59.359Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.359Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.360Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.360Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: github -> disconnected
+[2025-04-17T19:25:59.361Z] [DEBUG] [ServerDashboard] - Server status event received for github: disconnected
+[2025-04-17T19:25:59.361Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.361Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.361Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.362Z] [INFO] [StdioServer] - [github] Disposal complete.
+[2025-04-17T19:25:59.362Z] [INFO] [Extension] - Server Status Event: github -> error {"error":"GitHub MCP Server running on stdio","statusEnum":"error"}
+[2025-04-17T19:25:59.362Z] [INFO] [ChatViewProvider] - Handling status update for github: error
+[2025-04-17T19:25:59.362Z] [DEBUG] [ServerDashboard] - Handling status update for github: error
+[2025-04-17T19:25:59.363Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.363Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.363Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:25:59.364Z] [ERROR] [ServerDashboard] - Error from server github: GitHub MCP Server running on stdio {"stack":"Error: GitHub MCP Server running on stdio\n    at McpServerManager.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\extension.ts:74:73)\n    at McpServerManager.emit (node:events:530:35)\n    at McpServerManager.emit (node:domain:489:12)\n    at McpServerManager.handleServerStatusChange (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\McpServerManager.ts:942:14)\n    at StdioServer.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\McpServerManager.ts:798:19)\n    at StdioServer.emit (node:events:518:28)\n    at StdioServer.emit (node:domain:489:12)\n    at Socket.<anonymous> (c:\\Users\\zengn\\mcp-config-assistant\\mcp-client\\src\\services\\StdioServer.ts:159:22)\n    at Socket.emit (node:events:518:28)\n    at Socket.emit (node:domain:489:12)\n    at addChunk (node:internal/streams/readable:561:12)\n    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)\n    at Socket.Readable.push (node:internal/streams/readable:392:5)\n    at Pipe.onStreamRead (node:internal/stream_base_commons:191:23)\n    at Pipe.callbackTrampoline (node:internal/async_hooks:130:17)"}
+[2025-04-17T19:25:59.364Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: github -> error
+[2025-04-17T19:25:59.364Z] [DEBUG] [ServerDashboard] - Server status event received for github: error
+[2025-04-17T19:25:59.365Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:25:59.365Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:25:59.365Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:28:38.572Z] [INFO] [Extension] - Deactivate function called.
+[2025-04-17T19:28:38.572Z] [INFO] [Extension] - Deactivating extension, disposing McpServerManager...
+[2025-04-17T19:28:38.573Z] [INFO] [McpServerManager] - Disposing McpServerManager...
+[2025-04-17T19:28:38.573Z] [INFO] [StdioServer] - [time] Disposing server instance.
+[2025-04-17T19:28:38.573Z] [DEBUG] [StdioServer] - [time] Cleared response queue timers and rejected pending requests.
+[2025-04-17T19:28:38.573Z] [DEBUG] [StdioServer] - [time] Removing process listeners and attempting to kill PID: 19680
+[2025-04-17T19:28:38.574Z] [DEBUG] [StdioServer] - [time PID: 19680] process.kill('SIGTERM') called, result: true
+[2025-04-17T19:28:38.574Z] [INFO] [[StdioServer-time] Status changing from connected to disconnected] - undefined
+[2025-04-17T19:28:38.575Z] [INFO] [McpServerManager] - Handling status change for time: disconnected {}
+[2025-04-17T19:28:38.575Z] [WARN] [McpServerManager] - Server time disconnected unexpectedly or errored. Removing instance.
+[2025-04-17T19:28:38.576Z] [DEBUG] [StdioServer] - [time] Dispose called but already disposed.
+[2025-04-17T19:28:38.576Z] [INFO] [Extension] - Server Status Event: time -> disconnected {"statusEnum":"disconnected"}
+[2025-04-17T19:28:38.576Z] [INFO] [ChatViewProvider] - Handling status update for time: disconnected
+[2025-04-17T19:28:38.577Z] [DEBUG] [ServerDashboard] - Handling status update for time: disconnected
+[2025-04-17T19:28:38.577Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:28:38.577Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:28:38.577Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:28:38.578Z] [DEBUG] [ChatViewProvider] - Forwarding status update to webview: time -> disconnected
+[2025-04-17T19:28:38.578Z] [DEBUG] [ServerDashboard] - Server status event received for time: disconnected
+[2025-04-17T19:28:38.578Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: github {"found":false}
+[2025-04-17T19:28:38.579Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: time {"found":false}
+[2025-04-17T19:28:38.579Z] [DEBUG] [ConfigStorage] - Returning cached capabilities for serverId: filesystem {"found":false}
+[2025-04-17T19:28:38.579Z] [INFO] [StdioServer] - [time] Disposal complete.
+[2025-04-17T19:28:38.580Z] [INFO] [McpServerManager] - Disposed.
+[2025-04-17T19:28:38.580Z] [INFO] [Extension] - McpServerManager disposed.

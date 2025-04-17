@@ -2,14 +2,23 @@ import * as vscode from 'vscode';
 import { McpServerManager } from '../services/McpServerManager';
 import { ConfigStorage } from '../services/ConfigStorage';
 import { logDebug, logError, logInfo, logWarning, getErrorMessage } from '../utils/logger';
-import { ServerConfig } from '../models/Types'; // Import ServerConfig if needed by moved functions
+import { ServerConfig, ModelRequest } from '../models/Types'; // Import ServerConfig and ModelRequest
 import { getWebviewContent } from './webview/chatWebview'; // Assuming this is separate
 
+
 // Potential types for abilities (replace 'any' later)
-type ServerAbility = { name: string; description: string; /* ... other properties */ };
+// Match the ServerCapability definition more closely if available
+type ServerAbility = {
+    name: string;
+    description: string;
+    parameters?: Record<string, any>; // If server provides parameter info
+};
 
 export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
     private static readonly viewType = 'mcpChat';
+
+    // Add static instance property for extension.ts references
+    public static instance: ChatWebviewProvider | undefined;
 
     private _panel: vscode.WebviewPanel | undefined;
     private readonly _extensionUri: vscode.Uri;
@@ -29,13 +38,16 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         serverManager: McpServerManager,
         configStorage: ConfigStorage
     ) {
+        // Set the static instance
+        ChatWebviewProvider.instance = this;
+
         this._context = context;
         this._extensionUri = context.extensionUri;
         this._serverManager = serverManager;
         this._configStorage = configStorage;
 
-        // Register the provider itself to handle panel serialization (restoring panel after reload)
-        vscode.window.registerWebviewPanelSerializer(ChatWebviewProvider.viewType, this);
+        // Registration is now handled in extension.ts
+        // vscode.window.registerWebviewPanelSerializer(ChatWebviewProvider.viewType, this);
 
         // Listen to server status changes to update abilities and panel
         this._serverManager.on('status', this.handleServerStatusChange.bind(this));
@@ -47,45 +59,61 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
             ? vscode.window.activeTextEditor.viewColumn
             : vscode.ViewColumn.One;
 
+        logInfo(`[ChatProvider] showPanel called. Target column: ${column}`);
+
         if (this._panel) {
             // If we already have a panel, show it.
             logInfo('[ChatProvider] Revealing existing chat panel.');
-            this._panel.reveal(column);
+            try {
+                this._panel.reveal(column);
+                logInfo('[ChatProvider] Existing panel revealed successfully.');
+            } catch (revealError) {
+                logError(`[ChatProvider] Error revealing existing panel: ${getErrorMessage(revealError)}`);
+            }
         } else {
             // Otherwise, create a new panel.
             logInfo('[ChatProvider] Creating new chat panel.');
-            this._panel = vscode.window.createWebviewPanel(
-                ChatWebviewProvider.viewType,
-                'MCP Chat',
-                column || vscode.ViewColumn.One,
-                {
-                    enableScripts: true,
-                    retainContextWhenHidden: true,
-                    localResourceRoots: [
-                        vscode.Uri.joinPath(this._extensionUri, 'media'),
-                        vscode.Uri.joinPath(this._extensionUri, 'dist')
-                    ]
-                }
-            );
+            try {
+                this._panel = vscode.window.createWebviewPanel(
+                    ChatWebviewProvider.viewType,
+                    'MCP Chat',
+                    column || vscode.ViewColumn.One,
+                    {
+                        enableScripts: true,
+                        retainContextWhenHidden: true,
+                        localResourceRoots: [
+                            vscode.Uri.joinPath(this._extensionUri, 'media'),
+                            vscode.Uri.joinPath(this._extensionUri, 'dist')
+                        ]
+                    }
+                );
+                logInfo('[ChatProvider] New panel created successfully.');
 
-            // Set the webview's initial html content
-            this._panel.webview.html = getWebviewContent(this._panel.webview, this._extensionUri);
-            logInfo('[ChatProvider] Webview content set.');
+                // Set the webview's initial html content
+                logInfo('[ChatProvider] Setting webview HTML content...');
+                this._panel.webview.html = getWebviewContent(this._panel.webview, this._extensionUri);
+                logInfo('[ChatProvider] Webview content set.');
 
-            // Set up message listeners
-            this.setupChatPanelListeners(this._panel);
-            logInfo('[ChatProvider] Listeners set up.');
+                // Set up message listeners
+                this.setupChatPanelListeners(this._panel);
+                logInfo('[ChatProvider] Listeners set up.');
 
-            // Listen for when the panel is disposed
-            // This happens when the user closes the panel or when the panel is closed programmatically
-            this._panel.onDidDispose(() => this.disposePanel(), null, this._disposables);
-            logInfo('[ChatProvider] Dispose listener set up.');
+                // Listen for when the panel is disposed
+                // This happens when the user closes the panel or when the panel is closed programmatically
+                this._panel.onDidDispose(() => this.disposePanel(), null, this._disposables);
+                logInfo('[ChatProvider] Dispose listener set up.');
 
-            // Send initial state shortly after creation
-             setTimeout(() => {
-                this.updateWebviewWithServerList(this._panel);
-                // Send any other initial state like chat history if needed
-            }, 500); // Delay to ensure webview is ready
+                // Send initial state shortly after creation
+                setTimeout(() => {
+                    logInfo('[ChatProvider] Sending initial server list update to webview.');
+                    this.updateWebviewWithServerList(this._panel);
+                    // Send any other initial state like chat history if needed
+                }, 500); // Delay to ensure webview is ready
+            } catch (creationError) {
+                logError(`[ChatProvider] Error creating new webview panel: ${getErrorMessage(creationError)}`);
+                this._panel = undefined; // Ensure panel is reset on error
+                vscode.window.showErrorMessage(`Failed to create MCP Chat panel: ${getErrorMessage(creationError)}`);
+            }
         }
     }
 
@@ -190,36 +218,74 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         const originalText = message.text || '';
         logDebug(`[ChatProvider][sendMessage] Handling text: "${originalText}"`);
 
+        // Add user message to history (optional, if you implement history display)
+        // this._chatHistory.push({ role: 'user', text: originalText });
+        // panel.webview.postMessage({ command: 'addMessage', message: { role: 'user', text: originalText } });
+
         const { targetServerId, messageToSend, isToolCall } = await this.determineTargetAndFormatMessage(
             originalText,
-            this._serverAbilities, // Use provider's state
+            this._serverAbilities,
             this._serverManager,
             this._configStorage,
             this._context
         );
 
         if (targetServerId && messageToSend) {
-            logInfo(`[ChatProvider][sendMessage] Determined target: ${targetServerId}, format: ${isToolCall ? 'Tool Call' : 'Plain Text'}. Sending...`);
+            logInfo(`[ChatProvider][sendMessage] Determined target: ${targetServerId}, Tool Call: ${isToolCall}. Sending...`);
+             panel.webview.postMessage({ command: 'systemMessage', message: `Sending command to ${targetServerId}...`, type: 'info', duration: 2000 }); // Give feedback
             try {
                 logDebug(`[ChatProvider][sendMessage] Ensuring server ${targetServerId} is ready.`);
-                await this._serverManager.ensureServerStarted(targetServerId);
-                logDebug(`[ChatProvider][sendMessage] Server ${targetServerId} ready. Sending: ${messageToSend}`);
-                await this._serverManager.sendMessage(targetServerId, messageToSend);
-                logInfo(`[ChatProvider][sendMessage] Message sent successfully to ${targetServerId}.`);
-                panel.webview.postMessage({
-                    command: 'systemMessage',
-                    message: `Message sent to ${targetServerId}. Waiting for response...`,
-                    type: 'info',
-                    duration: 3000
-                });
+                await this._serverManager.ensureServerStarted(targetServerId); // Ensure server is running
+
+                // --- Construct ModelRequest ---
+                let requestObject: ModelRequest;
+                try {
+                    // messageToSend is the JSON string {"tool": "...", "params": {...}}
+                    const toolPayload = JSON.parse(messageToSend); // We parse it mainly to potentially grab an ID if needed
+
+                    requestObject = {
+                        // The entire structured JSON for the tool call becomes the prompt
+                        prompt: messageToSend,
+                        // Use a specific model name if appropriate for the server, e.g., 'filesystem'
+                        // Or keep it generic if the server routes based on the prompt content
+                        model: "filesystem", // Using server name as model hint
+                        id: toolPayload.id // Add an ID if the tool payload had one (optional)
+                    };
+                    logDebug(`[ChatProvider][sendMessage] Constructed ModelRequest: ${JSON.stringify(requestObject)}`);
+
+                } catch (parseError) {
+                    logError(`[ChatProvider][sendMessage] Failed to parse the determined messageToSend: ${messageToSend}. Error: ${getErrorMessage(parseError)}`);
+                    this.sendErrorToWebview(panel, `Internal error: Failed to format message before sending.`);
+                    return; // Stop processing
+                }
+                // --- End Construct ModelRequest ---
+
+                logDebug(`[ChatProvider][sendMessage] Sending ModelRequest to ${targetServerId}`);
+                const responseString = await this._serverManager.sendMessage(targetServerId, requestObject);
+                logInfo(`[ChatProvider][sendMessage] Raw response received from ${targetServerId}: ${responseString}`);
+
+                // --- Process and display response ---
+                try {
+                    const responseData = JSON.parse(responseString);
+                    logDebug(`[ChatProvider][sendMessage] Parsed response: ${JSON.stringify(responseData)}`);
+                    // Send structured data to the webview for rendering
+                    panel.webview.postMessage({ command: 'addMessage', message: { role: 'server', serverId: targetServerId, data: responseData } });
+                } catch (jsonError) {
+                    logError(`[ChatProvider][sendMessage] Failed to parse JSON response from ${targetServerId}: ${responseString} - Error: ${getErrorMessage(jsonError)}`);
+                    // Display raw response as text if parsing fails
+                    panel.webview.postMessage({ command: 'addMessage', message: { role: 'server', serverId: targetServerId, text: `(Raw/Invalid JSON response): ${responseString}` } });
+                }
+                // --- End Process response ---
+
             } catch (sendError: unknown) {
                 const errorMsg = getErrorMessage(sendError);
                 logError(`[ChatProvider][sendMessage] Error sending message to ${targetServerId}: ${errorMsg}`);
-                this.sendErrorToWebview(panel, `Failed to send message to ${targetServerId}: ${errorMsg}`);
+                this.sendErrorToWebview(panel, `Failed to send command to ${targetServerId}: ${errorMsg}`);
             }
         } else {
-            logError('[ChatProvider][sendMessage] Failed to determine target server or format message.');
-            this.sendErrorToWebview(panel, 'Could not determine where to send the message. No tool matched and no server seems connected.');
+            // Handle the case where determineTargetAndFormatMessage decided not to send (no tool match / missing params)
+            logInfo('[ChatProvider][sendMessage] No target server or formatted message determined. Informing user.');
+             panel.webview.postMessage({ command: 'addMessage', message: { role: 'system', text: "Sorry, I couldn't understand that command, find a suitable tool, or extract the required parameters." } });
         }
     }
 
@@ -275,7 +341,14 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
             this._serverManager.setDynamicConfig(serverId, serverConfig);
 
             const hasServer = this._serverManager.hasServer(serverId);
-            const isRunning = hasServer && this._serverManager.isServerRunning && this._serverManager.isServerRunning(serverId);
+            let isRunning = false;
+            if (hasServer) {
+                try {
+                    isRunning = this._serverManager.isServerRunning?.(serverId) || false;
+                } catch (err) {
+                    logWarning(`[ChatProvider] Error checking if server "${serverId}" is running: ${getErrorMessage(err)}`);
+                }
+            }
             logDebug(`[ChatProvider] Server ${serverId} - Has: ${hasServer}, Running: ${isRunning}`);
 
             if (!isRunning) {
@@ -353,8 +426,13 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         if (event.status === readyStatus) {
             logInfo(`[ChatProvider] Server ${event.serverId} connected. Fetching abilities.`);
             try {
-                const abilityRequestCommand = JSON.stringify({ command: "get_abilities" });
-                await this._serverManager.sendMessage(event.serverId, abilityRequestCommand);
+                // Create a proper ModelRequest object for the abilities request
+                const abilityRequestObject: ModelRequest = {
+                    prompt: JSON.stringify({ command: "get_abilities" }), // Stringify the command data for the prompt
+                    model: "system" // Use a specific model name or "default" for system requests
+                    // id can be added if needed for tracking: id: uuidv4()
+                };
+                await this._serverManager.sendMessage(event.serverId, abilityRequestObject);
                 logInfo(`[ChatProvider] Sent get_abilities request to ${event.serverId}.`);
             } catch (error) {
                 logError(`[ChatProvider] Failed to send get_abilities to ${event.serverId}: ${getErrorMessage(error)}`);
@@ -416,9 +494,14 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
                 try {
                     // Ensure config is known to manager before checking status
                     this._serverManager.setDynamicConfig(serverName, serverConfig);
-                    const isRunning = this._serverManager.hasServer(serverName) &&
-                                     this._serverManager.isServerRunning &&
-                                     this._serverManager.isServerRunning(serverName);
+                    let isRunning = false;
+                    if (this._serverManager.hasServer(serverName)) {
+                        try {
+                            isRunning = this._serverManager.isServerRunning?.(serverName) || false;
+                        } catch (err) {
+                            logWarning(`[ChatProvider] Error checking if server "${serverName}" is running: ${getErrorMessage(err)}`);
+                        }
+                    }
                     status = isRunning ? 'connected' : 'disconnected';
                 } catch (err) {
                     logWarning(`[ChatProvider] Failed to get status for server "${serverName}": ${getErrorMessage(err)}`);
@@ -485,13 +568,13 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         }
     }
 
-    // --- Message Determination Logic (Moved Here) ---
+    // --- Message Determination Logic (REVISED) ---
     private async determineTargetAndFormatMessage(
         originalText: string,
         serverAbilities: Map<string, ServerAbility[]>,
         serverManager: McpServerManager,
         configStorage: ConfigStorage,
-        extensionContext: vscode.ExtensionContext // Keep context if needed
+        extensionContext: vscode.ExtensionContext
     ): Promise<{ targetServerId: string | undefined; messageToSend: string | undefined; isToolCall: boolean }> {
         logDebug('[ChatProvider][determineTarget] Starting determination...');
         let targetServerId: string | undefined = undefined;
@@ -503,18 +586,29 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         logDebug(`[ChatProvider][determineTarget] Original text: "${originalText}"`);
         logDebug(`[ChatProvider][determineTarget] Current abilities: ${JSON.stringify(Array.from(serverAbilities.entries()))}`);
 
-        // Tool Detection
+        // --- Tool Detection (Existing Logic) ---
         const promptWords = originalText.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
         for (const [serverId, abilities] of serverAbilities.entries()) {
-             logDebug(`\n[ChatProvider][determineTarget] Checking server: ${serverId}`);
+            // Ensure server is connected before checking its abilities
             let isConnected = false;
             try {
-                isConnected = serverManager.hasServer(serverId) && serverManager.isServerRunning && serverManager.isServerRunning(serverId);
+                // Check status directly on the server instance
+                const serverInstance = serverManager.getServer(serverId);
+                // Assuming 'connected' is the string representation from ServerStatus enum
+                isConnected = !!serverInstance && serverInstance.getStatus() === 'connected';
             } catch (e) { logWarning(`[ChatProvider][determineTarget] Status check failed for ${serverId}: ${getErrorMessage(e)}`); }
 
-            if (!isConnected || !abilities || abilities.length === 0) continue;
+            if (!isConnected) {
+                logDebug(`[ChatProvider][determineTarget] Skipping server ${serverId} as it's not connected.`);
+                continue;
+            }
+            if (!abilities || abilities.length === 0) {
+                logDebug(`[ChatProvider][determineTarget] No abilities found for connected server ${serverId}.`);
+                continue;
+            }
 
-             logDebug(`[ChatProvider][determineTarget] Abilities on ${serverId}: ${abilities.map(a => a.name).join(', ')}`);
+            logDebug(`\n[ChatProvider][determineTarget] Checking connected server: ${serverId}`);
+            logDebug(`[ChatProvider][determineTarget] Abilities on ${serverId}: ${abilities.map(a => a.name).join(', ')}`);
             for (const ability of abilities) {
                 if (!ability.name || !ability.description) continue;
                 let currentScore = 0;
@@ -522,7 +616,7 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
                 const toolDescWords = ability.description.toLowerCase().split(/\s+/);
                 const allToolWords = [...new Set([...toolNameWords, ...toolDescWords])].filter(w => w.length > 0);
                 promptWords.forEach(promptWord => { if (allToolWords.includes(promptWord)) currentScore++; });
-                logDebug(`[ChatProvider][determineTarget] -> Score for '${ability.name}': ${currentScore}`);
+                logDebug(`[ChatProvider][determineTarget] -> Score for '${ability.name}' on ${serverId}: ${currentScore}`);
                 if (currentScore > bestMatch.score) {
                     bestMatch = { score: currentScore, toolName: ability.name, serverId: serverId };
                     logDebug(`[ChatProvider][determineTarget] ---> New best: ${ability.name} on ${serverId}`);
@@ -531,36 +625,77 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
         }
         logDebug('[ChatProvider][determineTarget] Tool matching finished.');
 
-        // Format message
+        // --- Format message BASED ON API ---
         if (bestMatch.score > 0) {
-            logInfo(`[ChatProvider][determineTarget] Match found: ${bestMatch.toolName} on ${bestMatch.serverId}`);
+            logInfo(`[ChatProvider][determineTarget] Match found: Tool='${bestMatch.toolName}' on Server='${bestMatch.serverId}'`);
             targetServerId = bestMatch.serverId;
-            messageToSend = JSON.stringify({ tool: bestMatch.toolName, params: { prompt: originalText } });
             isToolCall = true;
-        } else {
-            logInfo('[ChatProvider][determineTarget] No tool match. Falling back to plain text.');
-            isToolCall = false;
-            const allServerNames = configStorage.getServerNames();
-            targetServerId = allServerNames.find(id => {
-                let isConnected = false;
-                try { isConnected = serverManager.hasServer(id) && serverManager.isServerRunning && serverManager.isServerRunning(id); }
-                catch (e) { logWarning(`[ChatProvider][determineTarget Fallback] Status check failed for ${id}: ${getErrorMessage(e)}`); }
-                 logDebug(`[ChatProvider][determineTarget Fallback] Server ${id} status: ${isConnected}`);
-                return isConnected;
-            });
 
-            if (targetServerId) {
-                logInfo(`[ChatProvider][determineTarget Fallback] Found connected server: ${targetServerId}`);
-                messageToSend = JSON.stringify({ text: originalText });
-            } else {
-                logWarning('[ChatProvider][determineTarget Fallback] No connected server found.');
+            const toolName = bestMatch.toolName;
+            const text = originalText;
+            let params: any = {}; // Parameters for the tool
+
+            // --- Simple Parameter Extraction Heuristics (Needs Improvement!) ---
+            try {
+                // Basic path extraction (example - needs refinement)
+                if (['list_directory', 'read_file', 'get_file_info', 'create_directory'].includes(toolName)) {
+                    // Looks for things starting with C:\, D:\, /, or \ followed by non-space chars
+                    const pathMatch = text.match(/([a-zA-Z]:\\|\/|\\)([\w\-\.\s\\\/~]+)/);
+                    if (pathMatch && pathMatch[0]) {
+                        // Basic trim and cleanup
+                        params.path = pathMatch[0].trim().replace(/[?'",]*$/, '');
+                        logDebug(`[ChatProvider][determineTarget] Extracted 'path': ${params.path} for tool ${toolName}`);
+                    } else {
+                        // If no path found, but tool expects one, maybe default? Or signal error?
+                        // For list_directory, defaulting to '.' might be reasonable if allowed by server
+                        if (toolName === 'list_directory') {
+                            params.path = '.'; // Default to current/root allowed dir
+                            logWarning(`[ChatProvider][determineTarget] Could not extract 'path' for list_directory from: "${text}". Defaulting to '.'`);
+                        } else {
+                            logWarning(`[ChatProvider][determineTarget] Could not extract 'path' for tool ${toolName} from: "${text}". Required parameter missing.`);
+                            // Set target to undefined so we don't send a bad request
+                            targetServerId = undefined;
+                            messageToSend = undefined;
+                        }
+                    }
+                } else if (toolName === 'write_file' || toolName === 'edit_file' || toolName === 'move_file' || toolName === 'search_files') {
+                    logWarning(`[ChatProvider][determineTarget] Parameter extraction for tool '${toolName}' is complex and not implemented. Cannot proceed.`);
+                    targetServerId = undefined;
+                    messageToSend = undefined;
+                } else if (toolName === 'list_allowed_directories') {
+                    logDebug(`[ChatProvider][determineTarget] Tool '${toolName}' requires no parameters.`);
+                    // params remains empty {}
+                } else {
+                    logWarning(`[ChatProvider][determineTarget] Unknown tool or no specific parameter logic for tool '${toolName}'. Treating as error.`);
+                    targetServerId = undefined;
+                    messageToSend = undefined;
+                }
+
+                // Only construct message if we still have a target
+                if (targetServerId) {
+                    messageToSend = JSON.stringify({ tool: toolName, params: params });
+                }
+
+            } catch (extractionError) {
+                 logError(`[ChatProvider][determineTarget] Error during parameter extraction for ${toolName}: ${getErrorMessage(extractionError)}`);
+                 targetServerId = undefined;
+                 messageToSend = undefined;
             }
+            // --- End Parameter Extraction ---
+
+        } else {
+            // --- REVISED Fallback: No Tool Match ---
+            logInfo('[ChatProvider][determineTarget] No tool match found. Command not understood.');
+            targetServerId = undefined;
+            messageToSend = undefined;
+            isToolCall = false;
         }
-        logDebug(`[ChatProvider][determineTarget] Result: server=${targetServerId}, toolCall=${isToolCall}, msg=${messageToSend}`);
+
+        logDebug(`[ChatProvider][determineTarget] Result: serverId=${targetServerId}, isToolCall=${isToolCall}, messageToSend=${messageToSend}`);
         return { targetServerId, messageToSend, isToolCall };
     }
 
-    // --- Serialization Logic (for restoring panel) --- 
+    // --- Serialization Logic (for restoring panel) ---
 
     async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel, state: any): Promise<void> {
         logInfo(`[ChatProvider] Deserializing webview panel. State: ${JSON.stringify(state)}`);
@@ -583,7 +718,40 @@ export class ChatWebviewProvider implements vscode.WebviewPanelSerializer {
          setTimeout(() => {
             this.updateWebviewWithServerList(this._panel);
             // Send history if needed: panel.webview.postMessage({ command: 'loadHistory', history: this._chatHistory });
-        }, 500); 
+        }, 500);
+    }
+
+    // Add missing updateChat method referenced in extension.ts
+    public updateChat(message: string): void {
+        if (!this._panel) {
+            logWarning('[ChatProvider] Cannot update chat - panel not initialized');
+            return;
+        }
+        
+        logInfo(`[ChatProvider] Updating chat with message: ${message}`);
+        this._panel.webview.postMessage({
+            command: 'addMessage',
+            message: { role: 'system', text: message }
+        });
+    }
+
+    // Add missing handleStatusUpdate method referenced in extension.ts
+    public handleStatusUpdate(event: { serverId: string; status: string; error?: any }): void {
+        logInfo(`[ChatProvider] Handling status update for ${event.serverId}: ${event.status}`);
+        
+        // Forward to our internal status handler
+        this.handleServerStatusChange(event);
+        
+        // Additional status-specific handling (like displaying messages)
+        if (event.error) {
+            if (this._panel) {
+                this.sendErrorToWebview(
+                    this._panel, 
+                    `Server ${event.serverId} error: ${typeof event.error === 'string' ? event.error : getErrorMessage(event.error)}`
+                );
+            }
+            logError(`[ChatProvider] Error with server ${event.serverId}: ${getErrorMessage(event.error)}`);
+        }
     }
 
 } 
