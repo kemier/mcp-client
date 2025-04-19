@@ -1,42 +1,30 @@
 import * as vscode from 'vscode';
 import * as path from 'path'; // Needed for LogManager initialization
-import { LogManager } from './utils/LogManager';
+import { LogManager } from './utils/LogManager.js';
 
-// --- Restore necessary imports ---
-import { McpServerManager } from './services/McpServerManager';
-import { ConfigStorage } from './services/ConfigStorage';
-import { ChatViewProvider } from './panels/ChatViewProvider';
-import { ServerDashboard } from './panels/ServerDashboard';
-import { parseArgumentsString } from './commands/ServerCommands';
-import { ServerStatusEvent, ServerConfig, ModelRequest, ServerCapability, CapabilityItem } from './models/Types';
-import { determineAppropriateServers } from './utils'; // Restore if needed for server selection later
+// --- MCP Server Manager Imports ---
+import { McpServerManager } from './services/McpServerManager.js';
+import { ConfigStorage } from './services/ConfigStorage.js';
+import { ChatViewProvider } from './panels/ChatViewProvider.js';
+import { ServerDashboard } from './panels/ServerDashboard.js';
+import { parseArgumentsString } from './commands/ServerCommands.js';
+import { ServerStatusEvent, ServerConfig, ModelRequest, ServerCapability, CapabilityItem } from './models/Types.js';
 
-// --- Anthropic SDK Imports ---
-import { Anthropic } from "@anthropic-ai/sdk";
-// --- Try importing directly from the resources level ---
-import {
-  MessageParam,
-  Tool,
-  ToolUseBlock,
-  ToolResultBlockParam,
-} from "@anthropic-ai/sdk/resources"; // Removed '/messages.mjs'
+// --- Local LLM Client Import ---
+import { MCPClient as LocalLLMClient } from './mcp-local-llm-client/client.js';
 
 // --- Declare instances accessible within the module ---
 let configStorage: ConfigStorage;
 let mcpServerManager: McpServerManager;
-// Remove logManager instance variable, as we'll use static methods
-
 export let extensionContext: vscode.ExtensionContext;
 
-// --- Anthropic Client Instance ---
-// Instantiate later when API key is available
-let anthropic: Anthropic | undefined;
+// --- Local LLM Client Instance ---
+let localLLMClient: LocalLLMClient | undefined;
 
-// Define the simpler type needed for matching
-type SimpleServerAbility = {
-    name: string;
-    description: string;
-};
+// --- Export MCP Client for ChatViewProvider access ---
+export function getMcpClient(): LocalLLMClient | undefined {
+    return localLLMClient;
+}
 
 // Activate function
 export async function activate(context: vscode.ExtensionContext) {
@@ -114,6 +102,33 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     LogManager.info('Extension', 'Core services initialization block finished.');
+
+    // Initialize and Connect Local LLM Client
+    try {
+        LogManager.info('Extension', 'Initializing Local LLM Client...');
+        const config = vscode.workspace.getConfiguration('mcpServerManager');
+        const inferenceServerIp = config.get<string>('inferenceServerIp');
+        const inferenceServerPort = config.get<number>('inferenceServerPort');
+        LogManager.info('Extension', `Read IP/Port settings: IP = '${inferenceServerIp}', Port = ${inferenceServerPort}`); // Use IP/Port log
+
+        if (!inferenceServerIp || !inferenceServerPort) { // Check both IP and Port
+            LogManager.warn('Extension', 'Local LLM inference server IP or Port not configured. Local LLM features disabled.');
+            vscode.window.showWarningMessage('MCP: Inference Server IP and/or Port are not set in VS Code settings. Local LLM chat disabled.');
+        } else {
+            localLLMClient = new LocalLLMClient(mcpServerManager); // Ensure LLMClient is instantiated
+            LogManager.info('Extension', `Attempting to connect Local LLM Client to server at: ${inferenceServerIp}:${inferenceServerPort}`);
+            ChatViewProvider.instance?.updateChat(`Connecting to local inference server at ${inferenceServerIp}:${inferenceServerPort}...`);
+            await localLLMClient.connectToServer(inferenceServerIp, inferenceServerPort); // Pass IP and Port
+            LogManager.info('Extension', 'Local LLM Client connected successfully.');
+            ChatViewProvider.instance?.updateChat("Connected to local inference server. Ready for queries.");
+        }
+    } catch (error: any) {
+        console.error("!!! FAILED TO CONNECT LOCAL LLM CLIENT !!!", error);
+        LogManager.error('Extension', 'Failed to initialize or connect Local LLM Client', error);
+        vscode.window.showErrorMessage(`Failed to connect to local inference server: ${LogManager.getErrorMessage(error)}`);
+        ChatViewProvider.instance?.updateChat(`Error connecting to local inference server: ${LogManager.getErrorMessage(error)}`);
+        localLLMClient = undefined; // Ensure client is not used if connection failed
+    }
 
     // Register Chat View Provider (Sidebar)
     try {
@@ -299,13 +314,22 @@ export async function activate(context: vscode.ExtensionContext) {
 
      // Disposable for cleanup on extension deactivation
     context.subscriptions.push({
-        dispose: () => {
-            LogManager.info('Extension', 'Deactivating extension, disposing McpServerManager...');
+        dispose: async () => {
+            LogManager.info('Extension', 'Deactivating extension, disposing resources...');
             try {
-                mcpServerManager?.dispose(); // Use optional chaining
+                // Cleanup Local LLM Client
+                if (localLLMClient) {
+                    LogManager.info('Extension', 'Cleaning up Local LLM Client...');
+                    await localLLMClient.cleanup();
+                    LogManager.info('Extension', 'Local LLM Client cleaned up.');
+                }
+
+                // Dispose McpServerManager
+                mcpServerManager?.dispose();
                 LogManager.info('Extension', 'McpServerManager disposed.');
+
             } catch (disposeError: any) {
-                 LogManager.error('Extension', `Error disposing McpServerManager`, disposeError); // Pass error obj as data
+                 LogManager.error('Extension', `Error during deactivation cleanup`, disposeError);
             }
         }
     });
@@ -314,7 +338,7 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 // Deactivate function
-export function deactivate() {
+export async function deactivate() {
     console.log('MCP Manager Deactivating...');
     // Use static LogManager method, check if logger might be disposed already if necessary
     try {
@@ -327,227 +351,30 @@ export function deactivate() {
 
 // --- Refactored handleSendMessage function ---
 export async function handleSendMessage(message: { text: string }, webviewProvider: ChatViewProvider) {
-    const componentName = 'handleSendMessage(Anthropic)';
+    const componentName = 'handleSendMessage(LocalLLM)';
     LogManager.debug(componentName, `Triggered via ChatViewProvider`, message);
 
-    if (!configStorage || !mcpServerManager) {
-        LogManager.error(componentName, "Core services not initialized!");
-        webviewProvider.updateChat("Error: Core services not ready.");
+    if (!localLLMClient) { // Check if the client object exists and is connected (implicitly checked by processQuery)
+        LogManager.error(componentName, "Local LLM Client not initialized or connection failed.");
+        webviewProvider.updateChat("Error: Local LLM Client is not ready. Check configuration and logs.");
         return;
-    }
-
-    // --- Get Anthropic API Key & Initialize Client (Keep at the top) ---
-    const config = vscode.workspace.getConfiguration('mcpServerManager');
-    const apiKey = config.get<string>('anthropicApiKey');
-    if (!apiKey) {
-        LogManager.error(componentName, 'Anthropic API Key not configured.');
-        vscode.window.showErrorMessage('Anthropic API Key is not configured. Please set it in VS Code settings (MCP Server Manager > Anthropic Api Key).');
-        webviewProvider.updateChat("Error: Anthropic API Key not configured.");
-        return;
-    }
-    if (!anthropic) {
-        try {
-            anthropic = new Anthropic({
-                apiKey: apiKey,
-                timeout: 60 * 1000,
-            });
-            LogManager.info(componentName, 'Anthropic client initialized.');
-        } catch (err: any) {
-             LogManager.error(componentName, 'Failed to initialize Anthropic client', err);
-             webviewProvider.updateChat(`Error initializing Anthropic client: ${LogManager.getErrorMessage(err)}`);
-             return;
-        }
     }
 
     try {
-        // --- Initial Anthropic Call Setup ---
-        const messages: MessageParam[] = [{ role: "user", content: message.text }];
-        LogManager.debug(componentName, 'Preparing initial call to Anthropic');
-        webviewProvider.updateChat("Thinking..."); // Indicate processing
+        LogManager.debug(componentName, 'Sending query to Local LLM Client...');
+        webviewProvider.updateChat("Processing with local LLM..."); // Indicate processing
 
-        // --- MODIFICATION: Gather Tools JUST BEFORE the API call ---
-        const availableTools: Tool[] = [];
-        const serverNames = configStorage.getServerNames();
-        LogManager.debug(componentName, 'Gathering tools from currently connected servers...');
+        // Call the Local LLM Client's processQuery method
+        // This method now internally handles LLM calls and MCP tool execution
+        const result = await localLLMClient.processQuery(message.text);
+        LogManager.info(componentName, 'Received final response from Local LLM Client');
 
-        for (const serverId of serverNames) {
-            const serverInstance = mcpServerManager.getServer(serverId);
-            // Check CURRENT status right before the API call
-            if (serverInstance?.getStatus() === 'connected') {
-                const manifest = configStorage.getServerCapabilities(serverId);
-                if (manifest?.capabilities) {
-                    LogManager.debug(componentName, `Adding tools from connected server: ${serverId}`);
-                    manifest.capabilities.forEach((cap: CapabilityItem) => {
-                        const prefixedToolName = `${serverId}__${cap.name}`;
-
-                        // --- FIX: Ensure valid input_schema structure ---
-                        let finalInputSchema: Tool['input_schema'] = { type: 'object', properties: {} }; // Default empty object schema
-
-                        if (cap.inputSchema) {
-                            // Check if it already has a 'type' property (likely a valid schema)
-                            if (typeof cap.inputSchema === 'object' && 'type' in cap.inputSchema) {
-                                // Assume it's already a valid schema structure
-                                finalInputSchema = cap.inputSchema as Tool['input_schema'];
-                            }
-                            // Check if it's just a Record (treat as properties)
-                            else if (typeof cap.inputSchema === 'object' && !('type' in cap.inputSchema)) {
-                                finalInputSchema = {
-                                    type: 'object',
-                                    properties: cap.inputSchema as Record<string, any>,
-                                    // We don't know required fields here, so omit 'required' unless provided separately
-                                };
-                            }
-                             // Add more checks if other formats are possible for cap.inputSchema
-                        }
-                        // --- END FIX ---
-
-                        availableTools.push({
-                            name: prefixedToolName,
-                            description: cap.description || `Tool ${cap.name} on server ${serverId}`,
-                            input_schema: finalInputSchema, // Use the validated/constructed schema
-                        });
-                    });
-                } else {
-                     LogManager.debug(componentName, `Connected server ${serverId} reported no capabilities.`);
-                }
-            } else {
-                 LogManager.debug(componentName, `Skipping tools for server ${serverId} (Status: ${serverInstance?.getStatus() ?? 'Not Found'})`);
-            }
-        }
-
-        if (availableTools.length === 0) {
-            LogManager.warn(componentName, 'No tools available from connected servers AT THIS TIME.');
-            // Inform the user maybe? Or proceed without tools.
-            // Let's proceed without tools, Anthropic will respond naturally.
-        } else {
-             LogManager.debug(componentName, `Gathered ${availableTools.length} tools for Anthropic call`, { toolNames: availableTools.map(t => t.name) });
-        }
-        // --- END TOOL GATHERING MODIFICATION ---
-
-
-        // --- Make the Initial Anthropic Call ---
-        let response = await anthropic.messages.create({
-            model: "claude-3-5-sonnet-20240620",
-            max_tokens: 1024,
-            messages: messages,
-            tools: availableTools.length > 0 ? availableTools : undefined, // Pass tools if gathered
-        });
-
-        LogManager.debug(componentName, 'Received initial response from Anthropic', { stopReason: response.stop_reason });
-
-        // --- Handle Potential Tool Calls (Logic remains the same) ---
-        while (response.stop_reason === "tool_use" && response.content.some((c: any) => c.type === "tool_use")) {
-            const toolUses = response.content.filter((c: any): c is ToolUseBlock => c.type === "tool_use");
-            const toolResults: ToolResultBlockParam[] = [];
-
-            messages.push({ role: "assistant", content: response.content }); // Add assistant's turn (including tool_use requests)
-
-            for (const toolUse of toolUses) {
-                const fullToolName = toolUse.name;
-                const toolInput = toolUse.input;
-                const toolUseId = toolUse.id;
-
-                // --- MODIFICATION: Parse Server ID and Tool Name using double underscore ---
-                const nameParts = fullToolName.split('__'); // Split by double underscore
-                if (nameParts.length < 2) {
-                    LogManager.error(componentName, `Invalid tool name format from Anthropic: ${fullToolName}. Expected 'serverId__toolName'.`);
-                    toolResults.push({ type: "tool_result", tool_use_id: toolUseId, content: `Error: Invalid tool name format received: ${fullToolName}` });
-                    continue;
-                }
-                const targetServerId = nameParts[0];
-                const actualToolName = nameParts.slice(1).join('__'); // Re-join if tool name contained '__'
-                // --- END MODIFICATION ---
-
-                LogManager.info(componentName, `Anthropic requested tool call`, { serverId: targetServerId, toolName: actualToolName, input: toolInput });
-                webviewProvider.updateChat(`Calling tool ${actualToolName} on ${targetServerId}...`);
-
-                 // --- Execute Tool Call via McpServerManager ---
-                let toolOutputContent: string;
-                let isError = false;
-                 try {
-                    // Re-ensure server is started (good practice)
-                    await mcpServerManager.ensureServerStarted(targetServerId);
-
-                    const mcpRequestPayload: ModelRequest = {
-                        prompt: JSON.stringify({ tool: actualToolName, params: toolInput || {} }),
-                        model: targetServerId,
-                    };
-
-                    const responseString = await mcpServerManager.sendMessage(targetServerId, mcpRequestPayload);
-                    LogManager.info(componentName, `Raw response from MCP server ${targetServerId}: ${responseString}`);
-
-                    // Attempt to parse the server response. Assume it might be JSON containing the actual result.
-                    try {
-                         const serverResponseJson = JSON.parse(responseString);
-                         // Look for common output patterns (adapt as needed based on actual server responses)
-                         if (serverResponseJson.content && Array.isArray(serverResponseJson.content) && serverResponseJson.content[0]?.text) {
-                            toolOutputContent = serverResponseJson.content[0].text;
-                         } else if (typeof serverResponseJson === 'object') {
-                            // Fallback: stringify the whole JSON object
-                            toolOutputContent = JSON.stringify(serverResponseJson);
-                         } else {
-                            toolOutputContent = responseString; // Use raw string if not parseable or unexpected structure
-                         }
-                         isError = serverResponseJson.isError === true; // Check if server explicitly marked it as error
-
-                    } catch (parseError) {
-                        LogManager.warn(componentName, `Failed to parse JSON response from MCP server, using raw string.`, { responseString, parseError });
-                        toolOutputContent = responseString; // Use the raw response if JSON parsing fails
-                    }
-
-                 } catch (execError) {
-                    LogManager.error(componentName, `Error executing tool ${actualToolName} on ${targetServerId}`, execError);
-                    toolOutputContent = `Error: ${LogManager.getErrorMessage(execError)}`;
-                    isError = true;
-                 }
-
-                // Add the result back for the next Anthropic call
-                 toolResults.push({
-                    type: "tool_result",
-                    tool_use_id: toolUseId,
-                    content: toolOutputContent, // Send the extracted/raw content
-                    is_error: isError, // Indicate if the tool execution failed
-                });
-            } // End loop through toolUses
-
-            // Add the tool results to messages
-            messages.push({ role: "user", content: toolResults });
-
-            // Call Anthropic again
-             LogManager.debug(componentName, 'Making follow-up call to Anthropic with tool results');
-             webviewProvider.updateChat("Processing tool results...");
-             response = await anthropic.messages.create({
-                model: "claude-3-5-sonnet-20240620",
-                max_tokens: 1024,
-                messages: messages,
-                tools: availableTools.length > 0 ? availableTools : undefined,
-            });
-            LogManager.debug(componentName, 'Received follow-up response from Anthropic', { stopReason: response.stop_reason });
-
-        } // End while loop for tool calls
-
-        // --- Process Final Response ---
-        let finalText = "";
-        if (response.content.length > 0 && response.content[0].type === "text") {
-            finalText = response.content[0].text;
-        } else if (response.stop_reason === 'max_tokens') {
-             finalText = "[Response truncated due to maximum token limit]";
-             LogManager.warn(componentName, 'Anthropic response truncated due to max_tokens');
-        } else {
-             finalText = "[Received non-text final response or empty response]";
-             LogManager.warn(componentName, 'Anthropic final response was not text or was empty', { response });
-        }
-
-        webviewProvider.updateChat(finalText);
+        // Display the final result
+        webviewProvider.updateChat(result); // Display the text response from the client
 
     } catch (error: any) {
-        LogManager.error(componentName, `Unhandled error in handleSendMessage`, error);
-        // Check for Anthropic specific errors
-        if (error instanceof Anthropic.APIError) {
-             webviewProvider.updateChat(`An API error occurred (Status: ${error.status}): ${error.message}`);
-        } else {
-             webviewProvider.updateChat(`An unexpected error occurred: ${LogManager.getErrorMessage(error)}`);
-        }
+        LogManager.error(componentName, `Error in handleSendMessage with Local LLM Client`, error);
+        webviewProvider.updateChat(`An unexpected error occurred: ${LogManager.getErrorMessage(error)}`);
     }
 }
 

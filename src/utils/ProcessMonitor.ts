@@ -1,5 +1,6 @@
-import { ManagedProcess } from './ProcessTypes';
-import { ProcessLogger } from './ProcessUtils';
+import { EventEmitter } from 'events';
+import { ManagedProcess } from './ProcessTypes.js';
+import { ProcessLogger } from './ProcessUtils.js';
 
 export class ProcessMonitor {
     private startTime: number;

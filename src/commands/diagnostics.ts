@@ -1,25 +1,19 @@
 import * as vscode from 'vscode';
-import { McpServerManager } from '../services/McpServerManager';
-import { logInfo, logDebug, logError, getErrorMessage, logWarning } from '../utils/logger';
-import { ServerStatus } from '../models/Types';
-import { ConfigStorage } from '../services/ConfigStorage';
-import { extensionContext } from '../extension';
+import { McpServerManager } from '../services/McpServerManager.js';
+import { logInfo, logDebug, logError, getErrorMessage, logWarning } from '../utils/logger.js';
+import { ServerStatus, ServerStatusEvent } from '../models/Types.js';
+import { ConfigStorage } from '../services/ConfigStorage.js';
+import { extensionContext } from '../extension.js';
 
 // Helper function to safely convert ServerStatus enum to string
 function getServerStatusString(status: ServerStatus | undefined): string {
-    if (status === undefined) {
-        return 'Unknown';
-    }
+    if (!status) return 'Unknown';
     switch (status) {
-        case ServerStatus.Connecting: return 'Connecting';
         case ServerStatus.Connected: return 'Connected';
+        case ServerStatus.Connecting: return 'Connecting';
         case ServerStatus.Disconnected: return 'Disconnected';
         case ServerStatus.Error: return 'Error';
-        default:
-            // This handles potential unexpected enum values gracefully
-            const exhaustiveCheck: never = status;
-            logWarning(`[Diagnostics] Encountered unexpected server status value: ${exhaustiveCheck}`);
-            return 'InvalidStatus'; 
+        default: return 'Unknown';
     }
 }
 
@@ -42,17 +36,15 @@ export function registerDiagnosticCommands(context: vscode.ExtensionContext) {
 
             logDebug(`[Diagnostics] Checking status for servers: ${serverNames.join(', ')}`);
             serverNames.forEach(serverId => {
-                const status = serverManager.getServerStatus(serverId);
-                const uptime = serverManager.getServerUptime(serverId);
-                const lastResponse = serverManager.getLastServerResponseTime(serverId);
-                const statusString = getServerStatusString(status);
+                const statusEvent = serverManager.getServerStatus(serverId);
+                const statusString = getServerStatusString(statusEvent?.status);
                 
                 let logMessage = `[Diagnostics] Server: ${serverId}, Status: ${statusString}`;
-                if (uptime) {
-                    logMessage += `, Uptime (ms): ${Date.now() - uptime}`;
+                if (statusEvent?.pid) {
+                    logMessage += `, PID: ${statusEvent.pid}`;
                 }
-                if (lastResponse) {
-                    logMessage += `, Last Response: ${new Date(lastResponse).toISOString()}`;
+                if (statusEvent?.error) {
+                    logMessage += `, Error: ${statusEvent.error}`;
                 }
                 logInfo(logMessage);
             });

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "out/cjs",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "paths": {}
+  },
+  "include": [
+    "src/extension.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".vscode-test"
+  ]
+} 

@@ -1,0 +1,48 @@
+{
+    "server": {
+      "type": "memory",
+      "version": "1.0.0",
+      "capabilities": {
+        "streaming": true,
+        "multipleContexts": true,
+        "batchProcessing": true
+      }
+    },
+    "models": [
+      {
+        "id": "gpt-4",
+        "name": "GPT-4",
+        "provider": "openai",
+        "maxContextLength": 8192,
+        "supportedFeatures": ["completion", "chat", "function-calling"]
+      },
+      {
+        "id": "claude-3-opus",
+        "name": "Claude 3 Opus",
+        "provider": "anthropic",
+        "maxContextLength": 200000,
+        "supportedFeatures": ["completion", "chat"]
+      }
+    ],
+    "contexts": {
+      "default": {
+        "model": "gpt-4",
+        "history": [],
+        "systemPrompt": "You are a helpful AI assistant."
+      }
+    },
+    "transport": {
+      "type": "stdio",
+      "bufferSize": 4096
+    },
+    "storage": {
+      "persistenceEnabled": false,
+      "maxHistoryLength": 100,
+      "maxStorageSize": "100MB"
+    },
+    "logging": {
+      "level": "info",
+      "format": "json",
+      "destination": "stdout"
+    }
+  }

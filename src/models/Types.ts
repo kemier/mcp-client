@@ -1,6 +1,6 @@
-import { ProcessHandle, ProcessInputStream } from '../types/ProcessTypes';
-import { isProcessHandle, ProcessLogger } from '../utils/ProcessUtils';
-import { ProcessMonitor } from '../utils/ProcessMonitor';
+import { ProcessHandle, ProcessInputStream } from '../types/ProcessTypes.js';
+import { isProcessHandle, ProcessLogger } from '../utils/ProcessUtils.js';
+import { ProcessMonitor } from '../utils/ProcessMonitor.js';
 import { ChildProcess } from 'child_process';
 import { Readable, Writable } from 'stream';
 import * as vscode from 'vscode';
@@ -34,6 +34,7 @@ export interface ServerStatusEvent {
     lastUpdate?: number;
     pid?: number; // Optional: process ID
     models?: string[]; // Optional: available models
+    capabilities?: CapabilityManifest;
 }
 
 /**

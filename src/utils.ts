@@ -1,5 +1,6 @@
-import { ServerConfig, CapabilityManifest } from './models/Types';
-import { ConfigStorage } from './services/ConfigStorage';
+import * as vscode from 'vscode';
+import { ServerConfig, CapabilityManifest } from './models/Types.js';
+import { ConfigStorage } from './services/ConfigStorage.js';
 
 /**
  * Generates a random nonce for CSP

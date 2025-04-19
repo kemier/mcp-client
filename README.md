@@ -1,67 +1,101 @@
 # MCP Config Assistant - VS Code Extension
 
-This Visual Studio Code extension provides tools to manage and interact with servers implementing the Model Context Protocol (MCP), primarily focusing on communication via standard I/O (stdio). It also features an integrated AI assistant (powered by Anthropic Claude) that can dynamically use connected MCP servers as tools.
+This Visual Studio Code extension provides tools to manage Model Context Protocol (MCP) servers and facilitates interaction with a **local Large Language Model (LLM) inference server**. Communication with the local LLM server happens via **HTTP JSON-RPC**, while communication with MCP tool servers primarily happens via standard I/O (stdio).
 
 ## Core Features
 
-*   **Server Management:**
-    *   Add new MCP servers by specifying their start command, arguments, and environment variables.
-    *   Persistently store server configurations.
-    *   Start and stop managed server processes directly from VS Code.
-    *   Automatically start configured servers when VS Code launches (optional setting).
-    *   Remove server configurations.
+*   **MCP Tool Server Management:**
+    *   Add new MCP tool servers (e.g., filesystem, time, github) by specifying their start command, arguments, etc.
+    *   Persistently store tool server configurations.
+    *   Start and stop managed tool server processes directly from VS Code using `McpServerManager`.
+    *   Automatically start configured tool servers when VS Code launches (optional setting).
+    *   Remove tool server configurations.
 *   **Server Dashboard:**
-    *   A dedicated panel (`MCP Server Manager: Show Dashboard` command) to view all configured servers.
-    *   Displays the real-time status of each server (Connecting, Connected, Disconnected, Error) and its Process ID (PID).
-    *   Provides buttons to Start, Stop, Remove, and Refresh Capabilities for each server.
-*   **Capability Negotiation:**
-    *   Automatically sends `capability_request` to servers upon connection.
-    *   Receives and stores `capability_response` from servers, detailing available models, tools, and context types.
+    *   A dedicated panel (`MCP Server Manager: Show Dashboard` command) to view all configured MCP tool servers.
+    *   Displays the real-time status (Connecting, Connected, Disconnected, Error) and Process ID (PID) of each managed tool server.
+    *   Provides buttons to Start, Stop, Remove, and Refresh Capabilities for each tool server.
+*   **Capability Negotiation (for Tool Servers):**
+    *   Automatically sends `capability_request` to MCP tool servers upon connection.
+    *   Receives and stores `capability_response` from servers, detailing available capabilities (tools).
     *   Allows manual refreshing of capabilities via the dashboard or command palette.
-*   **AI Assistant Integration (Anthropic Claude):**
-    *   Integrates with Anthropic's API (currently using Claude 3.5 Sonnet).
-    *   Requires configuring your Anthropic API key in VS Code settings (`mcpServerManager.anthropicApiKey`).
-*   **Dynamic Tool Use:**
-    *   The AI assistant automatically discovers capabilities (tools) from all currently *connected* MCP servers.
-    *   It can intelligently decide to use these server-provided tools to fulfill user requests.
-    *   Handles the full tool-use lifecycle: Assistant requests tool -> Extension calls server -> Server executes -> Extension sends result back to Assistant -> Assistant generates final response.
+*   **Local LLM Integration (via HTTP JSON-RPC):**
+    *   Connects to a **running** local LLM inference process via a specified **IP address and Port**.
+    *   Requires configuring the IP and Port in VS Code settings (`mcpServerManager.inferenceServerIp`, `mcpServerManager.inferenceServerPort`).
+    *   Handles communication between the extension's chat interface and the local LLM process by sending JSON-RPC requests to the server's `/rpc` endpoint.
+*   **Dynamic Tool Use (LLM + MCP Servers):**
+    *   The integrated `MCPClient` library discovers capabilities (tools) from:
+        *   The **LLM Inference Server itself** (by calling its `tool_list` method).
+        *   All currently *connected* MCP tool servers managed by `McpServerManager`.
+    *   This combined list of tools is sent to the local LLM within the `create_message` request.
+    *   The local LLM decides when to use these tools, responding with `type: "tool_calls"`.
+    *   The `MCPClient` executes requested tool calls:
+        *   Calls to *managed servers* (e.g., `github@search_repositories`) are dispatched via `McpServerManager`.
+        *   Calls to tools hosted on the *inference server* itself are currently logged as unimplemented.
+    *   Results (or errors) from tool executions are sent back to the LLM in a subsequent `create_message` request within the `tool_results` parameter.
+    *   **Multi-Step Tool Calls:** The client supports loops where the LLM can make multiple sequential tool calls before generating the final response (`type: "final_text"`).
+    *   **Result Truncation:** If a tool result is very large (e.g., a large API response), the client truncates it before sending it back to the LLM to prevent request failures.
+*   **Conversation History Management:**
+    *   The `MCPClient` maintains conversation history across multiple turns within a single session.
+    *   The history (including the latest user message) is sent to the LLM with each `create_message` request.
+    *   The history returned by the LLM is stored for the next turn.
+    *   **New Chat Functionality:** A "New Chat" button in the UI allows clearing the client-side conversation history (`MCPClient.startNewChat()`) to start a fresh context with the LLM.
 *   **Chat Interface:**
-    *   A dedicated Chat View in the VS Code sidebar.
-    *   Send messages to the AI assistant.
-    *   View the assistant's responses, including indications of tool calls.
-    *   Displays server status updates.
+    *   A dedicated Chat View in the VS Code sidebar (`MCP Chat`).
+    *   Send messages to the configured local LLM.
+    *   View the LLM's responses, potentially generated after using MCP tools.
+    *   Displays status updates for managed MCP tool servers and the connection status to the local inference server.
 *   **Logging:**
     *   Detailed logging to a dedicated Output Channel (`MCP Server Manager`).
-    *   Logs are also written to timestamped files in the extension's global storage directory for debugging. (`MCP Server Manager: Show Logs` command).
+    *   Logs are also written to timestamped files in the extension's global storage directory (`MCP Server Manager: Show Logs` command).
 
 ## Requirements
 
 *   Visual Studio Code (latest version recommended).
-*   An [Anthropic API Key](https://console.anthropic.com/settings/keys) (required for the AI Assistant feature).
-*   Access to one or more MCP-compatible servers (e.g., [@modelcontextprotocol/server-filesystem](https://github.com/modelcontextprotocol/server-filesystem), [@modelcontextprotocol/server-github](https://github.com/modelcontextprotocol/server-github), [mcp-server-time](https://github.com/search?q=mcp-server-time)).
+*   **A running local LLM inference server:**
+    *   This server must be running independently and listening on a specific IP address and port.
+    *   It **must** expose an HTTP endpoint at `/rpc` that accepts JSON-RPC 2.0 requests via POST.
+    *   It **must** implement the following methods:
+        *   `tool_list`: Takes no parameters, returns `{"tools": [...]}` where each tool has `name`, `description`, `inputSchema`. Can return an empty list `[]` if the server hosts no tools itself.
+        *   `create_message`: Accepts parameters including `message` (string, optional), `tools` (array of available tools), `history` (array of previous turns), `tool_results` (array of results from previous tool calls). Returns a JSON object with:
+            *   `type`: Either `"tool_calls"` or `"final_text"`.
+            *   `content`: If `tool_calls`, an array of `{"tool": "tool_name", "parameters": {...}}`. If `final_text`, the string response.
+            *   `history`: The updated conversation history including the latest assistant response/tool call request and any tool results.
+*   Necessary environment and libraries for your chosen inference server.
+*   Access to one or more MCP-compatible tool servers (e.g., filesystem, github, time) that you want the local LLM to use.
 
 ## Configuration
 
-*   **Anthropic API Key:** Set your API key in VS Code Settings under `Extensions > MCP Server Manager > Anthropic Api Key`.
-*   **Auto-Start Servers:** Enable/disable automatic server startup via the `Extensions > MCP Server Manager > Auto Start Servers` setting.
-*   **Adding Servers:**
+*   **Inference Server IP and Port:** **Crucially**, configure the IP address and port where your local LLM inference server is listening. Go to VS Code Settings (`Ctrl+,`) and set:
+    *   `Extensions > MCP Server Manager > Inference Server Ip` (e.g., `127.0.0.1`)
+    *   `Extensions > MCP Server Manager > Inference Server Port` (e.g., `8000`)
+*   **Auto-Start Tool Servers:** Enable/disable automatic startup of managed MCP tool servers via the `Extensions > MCP Server Manager > Auto Start Servers` setting.
+*   **Adding MCP Tool Servers:**
     *   Use the command `MCP Server Manager: Add Server`.
-    *   Alternatively, use the "Add Server" button within the Server Dashboard. You will be prompted for a unique name, the start command, and optional arguments.
+    *   Alternatively, use the "Add Server" button within the Server Dashboard. You will be prompted for a unique name, the start command, and optional arguments for the *tool server*.
 
 ## Usage
 
-1.  **Configure API Key:** Ensure your Anthropic API key is set in the VS Code settings.
-2.  **Add Servers:** Use the `MCP Server Manager: Add Server` command or the dashboard to configure the servers you want to manage.
-    *   *Example Command (Filesystem Server):* `npx -y @modelcontextprotocol/server-filesystem C:\path\to\allowed\dir D:\another\allowed\path`
-    *   *Example Command (Time Server):* `uvx mcp-server-time --local-timezone=Your/Timezone`
-3.  **Open Dashboard:** Use the `MCP Server Manager: Show Dashboard` command to view and control servers.
-4.  **Start Servers:** Use the "Start" button on the dashboard for servers you want the AI assistant to use. Wait for their status to become "Connected".
-5.  **Open Chat View:** Find the MCP Chat View in the sidebar (you might need to click the corresponding icon in the Activity Bar).
-6.  **Interact:** Send messages to the assistant. If your request involves capabilities provided by a connected server (like getting the current time, listing files, etc.), the assistant should attempt to use the appropriate server tool.
+1.  **Start Local Inference Server:** Ensure your local LLM HTTP server is running, listening on the configured IP/port, and implementing the required `/rpc` endpoint and methods (`tool_list`, `create_message`).
+2.  **Configure Extension:** Set the correct `Inference Server Ip` and `Inference Server Port` in VS Code settings.
+3.  **Add MCP Tool Servers:** Use the `MCP Server Manager: Add Server` command or the dashboard to configure any MCP *tool servers* you want the LLM to use.
+    *   *Example Tool Server Command (Filesystem):* `npx -y @modelcontextprotocol/server-filesystem C:\path\to\allowed\dir`
+    *   *Example Tool Server Command (Time):* `uvx mcp-server-time --local-timezone=Your/Timezone`
+    *   *Example Tool Server Command (GitHub):* `uvx mcp-server-github` (requires authentication setup)
+4.  **Reload VS Code:** Use `Developer: Reload Window` after configuring the extension.
+5.  **Open Dashboard:** Use the `MCP Server Manager: Show Dashboard` command. Verify that the extension attempts to connect to your inference server (check logs/chat status) and starts any configured tool servers.
+6.  **Start Tool Servers:** Ensure any MCP tool servers you want to use are "Connected" in the dashboard.
+7.  **Open Chat View:** Find the MCP Chat View in the sidebar.
+8.  **Interact:** Send messages to the local LLM. Use the "New Chat" button to clear context.
 
 ## Development
 
-*(Add details here if needed, e.g., how to clone, install dependencies (`npm install`), compile (`npm run compile`), and run in debug mode (`F5`))*
+*(The core logic for interacting with the local LLM and MCP servers is in `src/mcp-local-llm-client/client.ts`. The main extension code is in `src/extension.ts`. UI components are in `src/panels`.)*
+
+To set up for development:
+1. Clone the repository.
+2. Run `npm install`.
+3. Run `npm run compile` (or `npm run watch` for continuous compilation).
+4. Press `F5` in VS Code to launch the Extension Development Host.
 
 ---
 

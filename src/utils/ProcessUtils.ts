@@ -1,6 +1,6 @@
-import { ProcessHandle } from '../types/ProcessTypes';
+import { ProcessHandle } from '../types/ProcessTypes.js';
 import { Readable, Writable } from 'stream';
-import { LogManager } from './LogManager';
+import { LogManager } from './LogManager.js';
 
 export function isProcessHandle(proc: any): proc is ProcessHandle {
     if (!proc) {

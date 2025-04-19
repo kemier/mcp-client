@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { LogManager } from './LogManager';
+import { LogManager } from './LogManager.js';
 
 // Declare the output channel at the module level
 let outputChannel: vscode.OutputChannel | undefined;

@@ -3,6 +3,7 @@
   "displayName": "MCP Server Manager",
   "description": "Manage Model Context Protocol (MCP) servers for AI assistants",
   "version": "0.1.0",
+  "type": "module",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -12,7 +13,7 @@
   "activationEvents": [
     "*"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/cjs/extension.js",
   "contributes": {
     "commands": [
       {
@@ -57,14 +58,17 @@
         "mcpServerManager.autoStartServers": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically start all configured MCP servers when the extension activates."
+          "description": "Automatically start all configured MCP tool servers when the extension activates."
         },
-        "mcpServerManager.anthropicApiKey": {
+        "mcpServerManager.inferenceServerIp": {
           "type": "string",
-          "description": "API Key for Anthropic Claude, used for determining tool calls from chat messages.",
-          "scope": "application",
-          "default": "",
-          "secret": true
+          "default": "127.0.0.1",
+          "description": "The IP address of the running local LLM inference server (NOTE: Currently unused by the extension connection logic)."
+        },
+        "mcpServerManager.inferenceServerPort": {
+          "type": "number",
+          "default": 8080,
+          "description": "The port number of the running local LLM inference server (NOTE: Currently unused by the extension connection logic)."
         }
       }
     },
@@ -90,15 +94,16 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "compile": "tsc -p ./ && tsc -p tsconfig.cjs.json",
+    "watch": "tsc -watch -p ./ & tsc -watch -p tsconfig.cjs.json",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^16.18.126",
+    "@types/node": "^18.19.86",
     "@types/vscode": "^1.60.0",
     "@typescript-eslint/eslint-plugin": "^5.30.0",
     "@typescript-eslint/parser": "^5.30.0",
@@ -106,8 +111,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@modelcontextprotocol/sdk": "^1.9.0",
+    "@modelcontextprotocol/sdk": "^1.10.1",
     "dotenv": "^16.5.0"
   }
 }

@@ -1,4 +1,5 @@
-import { ServerStatus } from '../models/Types';
+import { EventEmitter } from 'events';
+import { ServerStatus, ModelRequest } from '../models/Types.js';
 
 /**
  * Interface for a server

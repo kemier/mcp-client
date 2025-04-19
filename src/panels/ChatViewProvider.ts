@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import { LogManager } from '../utils/LogManager';
-import { extensionContext } from '../extension'; // Assuming global context access
-import { handleSendMessage } from '../extension'; // <-- Restore this import
-import { McpServerManager } from '../services/McpServerManager'; // Needed for status updates
-import { ServerStatusEvent } from '../models/Types';
+import { LogManager } from '../utils/LogManager.js';
+import { extensionContext } from '../extension.js'; // Assuming global context access
+import { handleSendMessage, getMcpClient } from '../extension.js'; // <-- Import getMcpClient
+import { McpServerManager } from '../services/McpServerManager.js'; // Needed for status updates
+import { ServerStatusEvent } from '../models/Types.js';
 
 // We'll store chat history here for now, associated with the provider instance
 let chatHistory: { role: string; text: string }[] = [];
@@ -53,14 +53,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             switch (message.command) {
                 case 'sendMessage':
                     if (message.text && this._view) {
-                        // Add user message to display (optional, handleSendMessage might do this via updateChat)
-                        // this.postMessage({
-                        //     command: 'addMessage',
-                        //     message: { role: 'user', text: message.text }
-                        // });
-
                         // Call the central handler from extension.ts
-                        await handleSendMessage({ text: message.text }, this); // <-- Use imported function
+                        await handleSendMessage({ text: message.text }, this);
+                    }
+                    return;
+                case 'newChat':
+                    LogManager.debug('ChatViewProvider', 'Received newChat command from webview');
+                    try {
+                        // Get the MCPClient instance via exported function
+                        const mcpClient = getMcpClient();
+                        if (mcpClient) {
+                             mcpClient.startNewChat();
+                             // Also tell the webview to clear its display
+                            this.postMessage({ command: 'clearChat' });
+                        } else {
+                             LogManager.warn('ChatViewProvider', 'MCPClient instance not found when handling newChat.');
+                             this.postMessage({ command: 'addBotMessage', text: '[Error: Could not start new chat - client not ready.]' });
+                        }
+                    } catch (error: any) {
+                         LogManager.error('ChatViewProvider', 'Error handling newChat command', error);
+                         this.postMessage({ command: 'addBotMessage', text: `[Error: Could not start new chat: ${error.message}]` });
                     }
                     return;
                 // Add other commands if needed (e.g., 'getInitialState')
@@ -133,6 +145,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             command: 'addBotMessage',
             text: message
         });
+    }
+
+    // Method to clear chat history display (called by MCPClient or command)
+    public clearChatDisplay(): void {
+         if (this._view) {
+             LogManager.info('ChatViewProvider', 'Clearing chat display in webview.');
+            this.postMessage({ command: 'clearChat' });
+         } else {
+             LogManager.warn('ChatViewProvider', 'Attempted to clear chat display, but view is not available.');
+         }
     }
 
     // --- HTML Content Generation ---
@@ -270,11 +292,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             </style>
         </head>
         <body>
-            <!-- <div class="server-status" id="server-status">Status: Loading...</div> -->
-            <div class="chat-history" id="chat-history"></div>
+            <div class="chat-history" id="chat-history">
+                <!-- Messages will be added here -->
+            </div>
             <div class="input-area">
-                <input type="text" id="message-input" placeholder="Type message...">
+                <textarea id="message-input" placeholder="Enter your message..."></textarea>
                 <button id="send-button">Send</button>
+                <button id="new-chat-button" title="Start New Chat">New Chat</button>
+            </div>
+            <div class="status-area" id="status-area">
+                <!-- Server statuses will be shown here -->
             </div>
 
             <!-- *** Reference the external script *** -->

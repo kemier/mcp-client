@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { ServerStatus, CapabilityManifest, ServerConfig } from '../models/Types';
-import { McpServerManager } from '../services/McpServerManager';
-import { ConfigStorage } from '../services/ConfigStorage';
-import { LogManager } from '../utils/LogManager';
-import { parseArgumentsString, configureEnvironmentVariables } from '../commands/ServerCommands';
+import { ServerStatus, CapabilityManifest, ServerConfig } from '../models/Types.js';
+import { McpServerManager } from '../services/McpServerManager.js';
+import { ConfigStorage } from '../services/ConfigStorage.js';
+import { LogManager } from '../utils/LogManager.js';
+import { parseArgumentsString, configureEnvironmentVariables } from '../commands/ServerCommands.js';
+import { getErrorMessage } from '../utils/logger.js';
 
 export class ServerDashboard {
     public static currentPanel: ServerDashboard | undefined;
@@ -111,7 +112,7 @@ export class ServerDashboard {
             const capabilities = this.configStorage.getServerCapabilities(serverId);
             const status = this.serverManager.getServerStatus(serverId);
             
-            serverCardsHtml += this.generateServerCard(serverId, config, capabilities, status);
+            serverCardsHtml += this.generateServerCard(serverId, config, capabilities, status?.status);
         });
         
         if (serverCardsHtml === '') {
@@ -522,45 +523,68 @@ export class ServerDashboard {
         }
 
         try {
+            // Restore ignoreFocusOut for command input
             const command = await vscode.window.showInputBox({
                 prompt: `Edit command for server "${serverId}"`,
                 value: currentConfig.command,
                 validateInput: (input) => input ? null : 'Command cannot be empty',
-                ignoreFocusOut: true
+                ignoreFocusOut: true // Restore
             });
             if (command === undefined) return;
 
+            // Restore ignoreFocusOut for args input
             const argsInput = await vscode.window.showInputBox({
                 prompt: `Edit command arguments (space separated)`,
                 value: currentConfig.args?.join(' ') || '',
                 placeHolder: 'e.g., --port 8080 --config ./config.json',
-                ignoreFocusOut: true
+                ignoreFocusOut: true // Restore
             });
             if (argsInput === undefined) return;
             const args = parseArgumentsString(argsInput);
 
+            // LogManager.debug('[handleEditServer]', 'Prompting user whether to edit environment variables...');
             const configureEnv = await vscode.window.showQuickPick(['Yes', 'No'], {
-                placeHolder: `Current Env: ${JSON.stringify(currentConfig.env || {})}. Edit environment variables?`,
-                ignoreFocusOut: true
+                placeHolder: `Current Env: ${JSON.stringify(currentConfig.env || {})}. Edit environment variables?`
+                // ignoreFocusOut: true
             });
-            if (configureEnv === undefined) return;
-            let env = currentConfig.env || {};
-            if (configureEnv === 'Yes') {
-                env = await configureEnvironmentVariables(env);
+            // LogManager.debug('[handleEditServer]', `User response to configureEnv prompt: ${configureEnv}`);
+
+            if (configureEnv === undefined) {
+                // LogManager.debug('[handleEditServer]', 'User cancelled configureEnv prompt. Returning.');
+                return;
             }
 
+            let env = currentConfig.env || {};
+            if (configureEnv === 'Yes') {
+                // LogManager.debug('[handleEditServer]', 'Calling configureEnvironmentVariables...');
+                env = await configureEnvironmentVariables(env);
+                // LogManager.debug('[handleEditServer]', 'Returned from configureEnvironmentVariables. New env:', env);
+            } else {
+                // LogManager.debug('[handleEditServer]', 'User chose not to edit env.');
+            }
+
+            // LogManager.debug('[handleEditServer]', 'Prompting user for shell setting...');
             const useShell = await vscode.window.showQuickPick(['Yes', 'No'], {
                 placeHolder: `Use shell to execute command? (Current: ${currentConfig.shell ? 'Yes' : 'No'})`,
-                ignoreFocusOut: true
+                ignoreFocusOut: true // Restore
             });
-            if (useShell === undefined) return;
+            // LogManager.debug('[handleEditServer]', `User response to useShell prompt: ${useShell}`);
+            if (useShell === undefined) {
+                // LogManager.debug('[handleEditServer]', 'User cancelled useShell prompt. Returning.');
+                return;
+            }
             const shell = useShell === 'Yes';
 
+            // LogManager.debug('[handleEditServer]', 'Prompting user for hideWindow setting...');
             const hideWindow = await vscode.window.showQuickPick(['Yes', 'No'], {
                 placeHolder: `Hide command window (Windows only)? (Current: ${currentConfig.windowsHide ? 'Yes' : 'No'})`,
-                ignoreFocusOut: true
+                ignoreFocusOut: true // Restore
             });
-            if (hideWindow === undefined) return;
+            // LogManager.debug('[handleEditServer]', `User response to hideWindow prompt: ${hideWindow}`);
+            if (hideWindow === undefined) {
+                // LogManager.debug('[handleEditServer]', 'User cancelled hideWindow prompt. Returning.');
+                return;
+            }
             const windowsHide = hideWindow === 'Yes';
 
             const updatedConfig: ServerConfig = {
@@ -572,7 +596,7 @@ export class ServerDashboard {
                 env
             };
 
-            await this.configStorage.saveServerConfig(serverId, updatedConfig);
+            await this.configStorage.addOrUpdateServer(serverId, updatedConfig);
             LogManager.info('ServerDashboard', `Server config updated for ${serverId}`, { newConfig: updatedConfig });
 
             this.updateWebviewContent();

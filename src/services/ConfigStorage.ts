@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ServerConfig, CapabilityManifest, ServerCapability } from '../models/Types';
-import { LogManager } from '../utils/LogManager';
+import { ServerConfig, CapabilityManifest, ServerCapability } from '../models/Types.js';
+import { LogManager } from '../utils/LogManager.js';
+import { logError, logInfo } from '../utils/logger.js';
 
-
+// Key for storing server configurations in global state
+const CONFIG_STORAGE_KEY = 'mcpServers';
 
 /**
  * Class to handle configuration storage for the extension
@@ -42,6 +44,11 @@ export class ConfigStorage {
         if (!fs.existsSync(this.storagePath)) {
             fs.mkdirSync(this.storagePath, { recursive: true });
             LogManager.info('ConfigStorage', `Created storage directory: ${this.storagePath}`);
+        }
+        
+        // Initialize with an empty object if it doesn't exist
+        if (!this.context.globalState.get(CONFIG_STORAGE_KEY)) {
+            this.context.globalState.update(CONFIG_STORAGE_KEY, {});
         }
         
         this.loadConfigurations();
@@ -170,27 +177,29 @@ export class ConfigStorage {
     }
 
     /**
-     * Remove a server configuration
+     * Removes a server configuration from the internal map and the legacy file.
+     * @param serverId The ID (name) of the server to remove.
+     * @returns True if the server was found and removed, false otherwise.
      */
-    public async removeServer(serverName: string): Promise<boolean> {
-        LogManager.info('ConfigStorage', `Removing server: ${serverName}`);
-        const removed = this.servers.delete(serverName);
+    public async removeServer(serverId: string): Promise<boolean> {
+        LogManager.info('ConfigStorage', `Removing server: ${serverId}`);
+        const removed = this.servers.delete(serverId);
         if (removed) {
             this.saveConfigurations();
-            await this.clearServerCapabilities(serverName);
-            LogManager.info('ConfigStorage', `Server ${serverName} removed from config.`);
+            await this.clearServerCapabilities(serverId);
+            LogManager.info('ConfigStorage', `Server ${serverId} removed from config.`);
             return true;
         } else {
-            LogManager.warn('ConfigStorage', `Attempted to remove non-existent server: ${serverName}`);
+            LogManager.warn('ConfigStorage', `Attempted to remove non-existent server: ${serverId}`);
             return false;
         }
     }
 
     /**
-     * Get a server configuration by name
+     * Get a server configuration by name/ID from the internal map.
      */
-    public getServer(name: string): ServerConfig | undefined {
-        return this.servers.get(name);
+    public getServer(serverId: string): ServerConfig | undefined {
+        return this.servers.get(serverId);
     }
 
     /**
@@ -256,16 +265,44 @@ export class ConfigStorage {
         return result;
     }
 
-    public async saveServerConfig(serverName: string, config: ServerConfig): Promise<void> {
-        this.servers.set(serverName, config);
-        this.saveConfigurations();
-        return Promise.resolve();
+    /**
+     * Sets capabilities for a server (alias for storeServerCapabilities).
+     * @deprecated Use storeServerCapabilities for clarity. This exists for compatibility.
+     */
+    public async setServerCapabilities(serverId: string, capabilities: CapabilityManifest | undefined): Promise<void> {
+        if (capabilities) {
+            await this.storeServerCapabilities(serverId, capabilities);
+        } else {
+            await this.clearServerCapabilities(serverId);
+        }
     }
 
     /**
-     * Get capabilities for a server (alias for getServerCapabilities for compatibility)
+     * Adds a new server configuration or updates an existing one in the internal map
+     * and persists it to the legacy config file.
+     * @param serverId The unique ID (name) of the server.
+     * @param config The ServerConfig object (the configuration details).
      */
-    public getCapabilities(serverId: string): CapabilityManifest | undefined {
-        return this.getServerCapabilities(serverId);
+    public async addOrUpdateServer(serverId: string, config: ServerConfig): Promise<void> {
+        if (!serverId || !config) {
+             logError('[ConfigStorage] Attempted to add/update server with invalid ID or config.');
+             throw new Error('Server ID and configuration are required.');
+        }
+        LogManager.info('ConfigStorage', `Adding/Updating server: ${serverId}`);
+        this.servers.set(serverId, config); // Update the internal map
+        this.saveConfigurations(); // Persist changes to servers.json
+        // Consider emitting an event if needed: this.context.globalState.update(...) or custom emitter
+    }
+
+    /**
+     * Saves or updates a server configuration.
+     * This is an alias for addOrUpdateServer.
+     * @param serverId The unique ID (name) of the server.
+     * @param config The ServerConfig object (the configuration details).
+     */
+    public async saveServerConfig(serverId: string, config: ServerConfig): Promise<void> {
+        // Simply call the existing method that handles adding/updating
+        LogManager.info('ConfigStorage', `Calling saveServerConfig (alias for addOrUpdateServer) for server: ${serverId}`);
+        await this.addOrUpdateServer(serverId, config);
     }
 } 

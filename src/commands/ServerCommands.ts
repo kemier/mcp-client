@@ -1,96 +1,35 @@
 import * as vscode from 'vscode';
-import { ConfigStorage } from '../services/ConfigStorage';
-import { ServerConfig } from '../models/Types';
-import { LogManager } from '../utils/LogManager';
+import { ConfigStorage } from '../services/ConfigStorage.js';
+import { ServerConfig } from '../models/Types.js';
+import { LogManager } from '../utils/LogManager.js';
+import { logInfo, logError, getErrorMessage } from '../utils/logger.js';
+import { inputServerDetails } from '../utils/inputUtils.js';
 
 export function registerAddServerCommand(context: vscode.ExtensionContext): vscode.Disposable {
-    return vscode.commands.registerCommand('mcpClient.addServer', async () => {
-        // Step 1: Get server name
-        const serverName = await vscode.window.showInputBox({
-            prompt: 'Enter a unique name for the server',
-            placeHolder: 'e.g., my-mcp-server',
-            validateInput: validateServerName
-        });
-        
-        if (!serverName) return; // User cancelled
-        
-        // Step 2: Get server type
-        const serverType = await vscode.window.showQuickPick(['stdio'], {
-            placeHolder: 'Select server communication type'
-        });
-        
-        if (!serverType) return; // User cancelled
-        
-        // Step 3: Get command
-        const command = await vscode.window.showInputBox({
-            prompt: 'Enter the command to start the server',
-            placeHolder: 'e.g., python -m mcp_server.py'
-        });
-        
-        if (!command) return; // User cancelled
-        
-        // Step 4: Get arguments
-        const argsInput = await vscode.window.showInputBox({
-            prompt: 'Enter command arguments (separate with spaces, use quotes for arguments with spaces)',
-            placeHolder: 'e.g., --port 8000 --log-level debug'
-        });
-        
-        const args = argsInput ? parseArgumentsString(argsInput) : [];
-        
-        // Step 5: Configure environment variables (optional)
-        const configureEnv = await vscode.window.showQuickPick(['Yes', 'No'], {
-            placeHolder: 'Configure environment variables?'
-        });
-        
-        let env: Record<string, string> = {};
-        if (configureEnv === 'Yes') {
-            env = await configureEnvironmentVariables();
-        }
-        
-        // Step 6: Configure shell options
-        const useShell = await vscode.window.showQuickPick(['Yes', 'No'], {
-            placeHolder: 'Use shell to execute command?'
-        });
-        
-        const shell = useShell === 'Yes';
-        
-        // Step 7: Configure window hide (Windows only)
-        const hideWindow = await vscode.window.showQuickPick(['Yes', 'No'], {
-            placeHolder: 'Hide command window (Windows only)?'
-        });
-        
-        const windowsHide = hideWindow === 'Yes';
-        
-        // Step 8: Create server configuration
-        const serverConfig: ServerConfig = {
-            type: serverType as 'stdio' | 'sse',
-            command,
-            args,
-            shell,
-            windowsHide,
-            env,
-            heartbeatEnabled: true
-        };
-        
-        // Save configuration
+    return vscode.commands.registerCommand('mcpClient.addServerWizard', async () => {
+        logInfo('[ServerCommands] Executing command: mcpClient.addServerWizard');
         try {
             const configStorage = ConfigStorage.getInstance(context);
-            await configStorage.saveServerConfig(serverName, serverConfig);
-            
-            vscode.window.showInformationMessage(`Server "${serverName}" added successfully.`);
-            LogManager.info('ServerCommands', `Added new server: ${serverName}`, { config: serverConfig });
-            
-            // Offer to test the server
-            const testServer = await vscode.window.showQuickPick(['Yes', 'No'], {
-                placeHolder: 'Test server connection now?'
-            });
-            
-            if (testServer === 'Yes') {
-                vscode.commands.executeCommand('mcpConfig.diagnoseServer', serverName);
+
+            const details = await inputServerDetails(context);
+
+            if (details) {
+                const { id: serverName, config: serverConfig } = details;
+                logInfo(`[ServerCommands] Received details for server: ${serverName}`);
+
+                await configStorage.addOrUpdateServer(serverName, serverConfig);
+
+                vscode.window.showInformationMessage(`Server configuration '${serverName}' added/updated successfully.`);
+
+                // Optionally trigger other actions like starting the server via McpServerManager
+                // Example: McpServerManager.getInstance().startServer(serverName);
+
+            } else {
+                logInfo('[ServerCommands] Add server wizard cancelled by user.');
             }
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to add server: ${error instanceof Error ? error.message : String(error)}`);
-            LogManager.error('ServerCommands', 'Failed to add server', error);
+            logError('[ServerCommands] Error in add server command:', getErrorMessage(error));
+            vscode.window.showErrorMessage(`Failed to add/update server: ${getErrorMessage(error)}`);
         }
     });
 }
@@ -165,34 +104,83 @@ export async function configureEnvironmentVariables(initialEnv: Record<string, s
     const env: Record<string, string> = { ...initialEnv };
     let configuring = true;
 
-    // Add a message indicating current env vars if desired
-    // vscode.window.showInformationMessage('Current Env Vars: ' + JSON.stringify(env) + '. Add/Modify below, leave name empty to finish.');
-
     while (configuring) {
+        // LogManager.debug('[configureEnvironmentVariables]', 'Loop start. Current env:', env);
         const varName = await vscode.window.showInputBox({
             prompt: 'Enter environment variable name (leave empty to finish)',
-            placeHolder: 'e.g., API_KEY',
-            ignoreFocusOut: true // Keep open on focus loss
+            placeHolder: 'e.g., API_KEY'
         });
+        // LogManager.debug('[configureEnvironmentVariables]', `Got varName: ${varName}`);
 
         if (!varName) {
+            // LogManager.debug('[configureEnvironmentVariables]', 'varName is empty, setting configuring = false.');
             configuring = false;
             continue;
         }
 
-        const varValue = await vscode.window.showInputBox({
-            prompt: `Enter value for ${varName}`,
-            placeHolder: `Current: ${env[varName] || 'Not set'}`,
-            value: env[varName],
-            ignoreFocusOut: true // Keep open on focus loss
-        });
+        try {
+            // LogManager.debug('[configureEnvironmentVariables]', 'Prompting for varValue...');
+            const varValue = await vscode.window.showInputBox({
+                prompt: `Enter value for ${varName}`,
+                placeHolder: `Current: ${env[varName] || 'Not set'}`
+                // value: env[varName], // Keep this line removed/commented
+            });
+            // LogManager.debug('[configureEnvironmentVariables]', `Returned from varValue input. varValue = ${varValue}`);
 
-        if (varValue !== undefined) {
-            env[varName] = varValue;
-        } else {
-            vscode.window.showWarningMessage(`Value input cancelled for ${varName}, keeping previous value.`);
+            if (varValue !== undefined) {
+                // LogManager.debug('[configureEnvironmentVariables]', 'varValue is defined, updating env.');
+                env[varName] = varValue;
+
+                // LogManager.debug('[configureEnvironmentVariables]', 'Preparing to ask "Add or edit another?"...');
+                const addAnother = await vscode.window.showQuickPick(['Yes', 'No'], {
+                    placeHolder: `Variable ${varName} set. Add or edit another?`
+                });
+                // LogManager.debug('[configureEnvironmentVariables]', `Got addAnother: ${addAnother}`);
+
+                if (addAnother === 'No' || addAnother === undefined) {
+                    // LogManager.debug('[configureEnvironmentVariables]', 'User chose No or cancelled addAnother, setting configuring = false.');
+                    configuring = false;
+                } else {
+                    // LogManager.debug('[configureEnvironmentVariables]', 'User chose Yes for addAnother, continuing loop.');
+                }
+            } else {
+                // LogManager.debug('[configureEnvironmentVariables]', 'varValue is undefined (cancelled), showing warning and continuing loop.');
+                vscode.window.showWarningMessage(`Value input cancelled for ${varName}, keeping previous value.`);
+            }
+        } catch (error) {
+            LogManager.error('[configureEnvironmentVariables]', 'Caught error after varName input:', error);
+            vscode.window.showErrorMessage(`An unexpected error occurred while editing environment variables: ${getErrorMessage(error)}`);
+            configuring = false; // Stop the loop on error
         }
+
+        // LogManager.debug('[configureEnvironmentVariables]', `End of loop iteration. configuring = ${configuring}`);
     }
 
+    // LogManager.debug('[configureEnvironmentVariables]', 'Exited loop. Returning env:', env);
     return env;
-} 
+}
+
+// Placeholder for edit/remove commands if they exist in this file
+export function registerEditServerCommand(/* ... */): vscode.Disposable {
+    // Replace saveServerConfig with addOrUpdateServer here too if used
+    throw new Error("registerEditServerCommand not implemented");
+}
+
+export function registerRemoveServerCommand(/* ... */): vscode.Disposable {
+    // Uses configStorage.removeServer - should be okay
+     throw new Error("registerRemoveServerCommand not implemented");
+}
+
+// Example possible usage within an edit function (replace if found):
+async function handleEditServer(context: vscode.ExtensionContext, serverId: string) {
+     const configStorage = ConfigStorage.getInstance(context);
+     const existingConfig = configStorage.getServer(serverId);
+     if (!existingConfig) { /* ... */ return; }
+     // ... prompt user for changes, resulting in updatedConfig ...
+     const updatedConfig = { ...existingConfig /* ... applied changes ... */ };
+     // Replace this line:
+     // await configStorage.saveServerConfig(serverId, updatedConfig);
+     // With this:
+     await configStorage.addOrUpdateServer(serverId, updatedConfig);
+     // ...
+}

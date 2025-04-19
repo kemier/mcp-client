@@ -1,4 +1,4 @@
-import { ServerConfig } from '../models/Types';
+import { ServerConfig } from '../models/Types.js';
 
 // 定义可用的服务器配置
 export const availableServers = {

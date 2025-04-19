@@ -1,5 +1,6 @@
+/// <reference lib="dom" />
 import * as vscode from 'vscode';
-import { getNonce } from '../../utils';
+import { getNonce } from '../../utils.js';
 
 export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const nonce = getNonce();
