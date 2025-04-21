@@ -7,21 +7,25 @@ import { LogManager } from '../utils/LogManager.js';
 // @ts-ignore - TS2307 Suppressing persistent import error during refactoring
 import { z } from 'zod';
 
-// === REVERT TO STANDARD SUBPATH IMPORT ===
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'; // Import only Client
+// === Remove Static SDK Imports ===
+// import { Client } from '@modelcontextprotocol/sdk/client/index.js'; 
+// import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 // =========================================
 
-// Standard transport import
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-
-// Standard types import - Import specific types directly from /types
+// Standard types import - Add resolution-mode attribute
+// Keep type imports static
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js' assert { 'resolution-mode': 'import' }; 
+import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js' assert { 'resolution-mode': 'import' };
 import type { 
     ListResourcesRequest, 
     ListResourcesResult, 
     ReadResourceRequest, 
     ReadResourceResult 
-    // ListResourcesResultSchema and ReadResourceResultSchema seem missing from SDK exports?
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@modelcontextprotocol/sdk/types.js' assert { 'resolution-mode': 'import' };
+// --- End SDK Imports ---
+
+// --- Import ServerDashboard to allow direct UI updates ---
+import { ServerDashboard } from '../panels/ServerDashboard.js';
 // --- End SDK Imports ---
 
 // Interface representing a managed server instance using the SDK
@@ -29,8 +33,8 @@ interface ManagedServer {
     serverId: string;
     config: ServerConfig;
     status: ServerStatus;
-    client?: Client; // SDK Client instance
-    transport?: StdioClientTransport; // Specifically StdioClientTransport for stdio type
+    client?: Client; // Use static import type
+    transport?: StdioClientTransport; // Use static import type
     capabilities?: CapabilityManifest; // Store discovered capabilities
     statusEmitter: EventEmitter; // Emitter for this specific server's status
     lastError?: string; // Store last known error message
@@ -45,47 +49,34 @@ export class McpServerManager extends EventEmitter {
     private constructor(configStorage: ConfigStorage) {
         super();
         this.configStorage = configStorage;
-        // Load autoStart setting from config if necessary
-        // this.autoStartServers = vscode.workspace.getConfiguration('mcp').get('autoStartServers', true);
     }
 
     // --- Singleton Pattern ---
     public static getInstance(configStorage?: ConfigStorage): McpServerManager {
         if (!McpServerManager.instance) {
              if (!configStorage) {
-                 // Attempt to get instance from extensionContext if available during initialization
-                 // This might require passing extensionContext differently or ensuring it's set early.
-                 // For simplicity, let's assume ConfigStorage is initialized before getInstance is first called neededly.
-                 // Consider refactoring initialization flow if this becomes problematic.
                  throw new Error("McpServerManager requires ConfigStorage for initialization.");
              }
             McpServerManager.instance = new McpServerManager(configStorage);
         }
-        // If configStorage is provided later, maybe update the instance's storage?
-        // else if (configStorage && McpServerManager.instance.configStorage !== configStorage) {
-        //    LogManager.warn('McpServerManager', 'getInstance called with different ConfigStorage instance.');
-        //    McpServerManager.instance.configStorage = configStorage;
-        // }
         return McpServerManager.instance;
     }
     // --- End Singleton Pattern ---
-
 
     public async initialize(): Promise<void> {
         logInfo('[McpServerManager] Initializing...');
         const serverConfigs = this.configStorage.getAllServers();
         logDebug(`[McpServerManager] Found server configs: ${Object.keys(serverConfigs).join(', ')}`);
 
-        this.servers.clear(); // Clear any previous state
+        this.servers.clear();
 
         for (const serverId in serverConfigs) {
             const config = serverConfigs[serverId];
-            // Initialize server entry without starting
-             this.servers.set(serverId, {
+            this.servers.set(serverId, {
                  serverId: serverId,
                  config: config,
                  status: ServerStatus.Disconnected,
-                 statusEmitter: new EventEmitter() // Each server gets its own status emitter
+                 statusEmitter: new EventEmitter()
              });
             logDebug(`[McpServerManager] Registered server: ${serverId}`);
         }
@@ -103,18 +94,16 @@ export class McpServerManager extends EventEmitter {
         logInfo(`[McpServerManager] Attempting to auto-start servers: ${serverIds.join(', ')}`);
         for (const serverId of serverIds) {
             const existing = this.servers.get(serverId);
-            // Only start if disconnected or errored
             if (existing && (existing.status === ServerStatus.Disconnected || existing.status === ServerStatus.Error)) {
                  try {
                      await this.startServer(serverId);
                  } catch (error) {
                      logError(`[McpServerManager] Failed to auto-start server ${serverId}: ${getErrorMessage(error)}`);
-                     // Status should be updated within startServer on failure
                  }
             } else if (existing) {
                  logInfo(`[McpServerManager] Server ${serverId} already in state ${existing.status}, skipping auto-start.`);
             } else {
-                 logWarning(`[McpServerManager] Config found for ${serverId} but no entry in manager during auto-start (should not happen after initialize).`);
+                 logWarning(`[McpServerManager] Config found for ${serverId} but no entry in manager during auto-start.`);
             }
         }
     }
@@ -127,33 +116,27 @@ export class McpServerManager extends EventEmitter {
         if (!config) {
             throw new Error(`Configuration for server ${serverId} not found.`);
         }
-        // Ensure entry exists if called directly without initialize finding it (edge case)
         if (!managedServer) {
              logWarning(`[McpServerManager] Server entry for ${serverId} not found during startServer, creating dynamically.`);
              managedServer = { serverId, config, status: ServerStatus.Disconnected, statusEmitter: new EventEmitter() };
              this.servers.set(serverId, managedServer);
         }
 
-        // Prevent starting if already connected/connecting
         if (managedServer.status === ServerStatus.Connected || managedServer.status === ServerStatus.Connecting) {
             logWarning(`[McpServerManager] Server ${serverId} is already starting or connected.`);
             return;
         }
 
-        // Reset error state before starting
         managedServer.lastError = undefined;
-        this.updateServerStatus(serverId, ServerStatus.Connecting); // Set status to Connecting
+        this.updateServerStatus(serverId, ServerStatus.Connecting);
 
-        // --- SDK Integration for stdio ---
         if (config.type === 'stdio') {
-            logInfo(`[McpServerManager] Starting server: ${serverId} (Type: stdio) using SDK (targeting ESM)`);
+            logInfo(`[McpServerManager] Starting server: ${serverId} (Type: stdio) using SDK`);
             try {
-                // Ensure previous transport/client are cleaned up if retrying after error
                 if (managedServer.transport) await managedServer.transport.close().catch(()=>{});
                 managedServer.client = undefined;
                 managedServer.transport = undefined;
 
-                // Filter out undefined values from process.env BEFORE creating transport options
                 const processEnvFiltered: Record<string, string> = {};
                 for (const key in process.env) {
                     if (process.env[key] !== undefined) {
@@ -161,7 +144,8 @@ export class McpServerManager extends EventEmitter {
                     }
                 }
 
-                // 1. Create StdioClientTransport (using ESM import)
+                // 1. Create StdioClientTransport (using dynamic import)
+                const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
                 const transport = new StdioClientTransport({
                     command: config.command,
                     args: config.args || [],
@@ -169,54 +153,49 @@ export class McpServerManager extends EventEmitter {
                 });
                 managedServer.transport = transport;
 
-                // 2. Create Client (using ESM import)
+                // 2. Create Client (using dynamic import)
+                const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
                 const client = new Client({
                     name: `vscode-ext-${serverId}`,
                     version: vscode.extensions.getExtension('mcp-server-manager.mcp-server-manager')?.packageJSON?.version || '0.0.0',
                 });
                 managedServer.client = client;
 
-                // 4. Start the connection
+                // 4. Start the connection - simplest form
                 logInfo(`[McpServerManager-${serverId}] Attempting to connect SDK Client...`);
                 await client.connect(transport);
 
                 // --- ASSUME CONNECTED FOR NOW (NEEDS EVENT HANDLING) ---
-                // Since event handlers are commented out, manually update status after connect attempt.
-                // This is TEMPORARY and needs to be replaced by proper event handling.
                 logWarning(`[McpServerManager-${serverId}] TEMPORARY: Assuming connection successful after connect() call. Status manually set.`);
-                this.updateServerStatus(serverId, ServerStatus.Connected, undefined /* No PID access yet */);
+                this.updateServerStatus(serverId, ServerStatus.Connected, undefined);
                 await this.fetchAndStoreCapabilities(serverId);
+
+                // --- Force Dashboard UI Update ---
+                if (ServerDashboard.currentPanel) {
+                    // Assuming LogManager.debug needs context + message
+                    LogManager.debug('McpServerManager', `[${serverId}] Forcing dashboard UI update after manual connection.`); 
+                    ServerDashboard.currentPanel.updateWebviewContent();
+                }
                 // --- END TEMPORARY STATUS ---
 
-                // Initial check if connection failed immediately (e.g., command not found)
                  const postConnectServer = this.servers.get(serverId);
                  if (postConnectServer && postConnectServer.status === ServerStatus.Connecting) {
-                     // If still connecting after await client.connect(), it might have failed silently or is slow.
-                     // The onerror/onclose handlers should eventually catch it.
-                     // We could add a short timeout here for faster feedback on immediate failures.
                      logDebug(`[McpServerManager-${serverId}] client.connect() returned, waiting for transport events...`);
                  }
 
-
             } catch (error) {
                  logError(`[McpServerManager-${serverId}] Error during SDK client setup/connection: ${getErrorMessage(error)}`);
-                 // Ensure status is set to Error
                  this.updateServerStatus(serverId, ServerStatus.Error, undefined, getErrorMessage(error));
-                 // Clean up potentially partially created client/transport
                  const failedServer = this.servers.get(serverId);
                  if (failedServer) {
                      failedServer.transport?.close().catch((e: Error) => logError(`[McpServerManager-${serverId}] Error closing transport during cleanup: ${e.message}`));
                      failedServer.client = undefined;
                      failedServer.transport = undefined;
                  }
-                 // Do not re-throw here, as startServer's signature doesn't return Promise<IServer> anymore
-                 // The error state is captured in the status.
             }
         } else {
-            // Handle other server types if needed in the future
             logWarning(`[McpServerManager] Server type '${config.type}' not currently supported for starting via SDK.`);
             this.updateServerStatus(serverId, ServerStatus.Error, undefined, `Unsupported server type: ${config.type}`);
-            // throw new Error(`Unsupported server type: ${config.type}`); // Don't throw
         }
     }
 
@@ -300,7 +279,7 @@ export class McpServerManager extends EventEmitter {
         try {
             // Use client.callTool for generic tool calls
             // Using z.any() bypasses specific SDK response validation for this generic method
-            const { z } = await import('zod'); // Dynamic import
+            // const { z } = await import('zod'); // Dynamic import - Moved to where needed
             const response = await managedServer.client.callTool({
                 name: method,
                 arguments: params || {}
@@ -328,49 +307,76 @@ export class McpServerManager extends EventEmitter {
             return;
         }
 
-        // Prevent stopping if already disconnected
-        if (managedServer.status === ServerStatus.Disconnected) {
-             logInfo(`[McpServerManager] Server ${serverId} is already disconnected. Skipping stop.`);
+        // Prevent stopping if already disconnected or stopping
+        if (managedServer.status === ServerStatus.Disconnected || managedServer.status === ServerStatus.Stopping) {
+             logInfo(`[McpServerManager] Server ${serverId} is already ${managedServer.status}. Skipping stop.`);
              // Ensure refs are cleared if stop is called on an already disconnected server entry
-             managedServer.client = undefined;
-             managedServer.transport = undefined;
-             managedServer.capabilities = undefined;
+             if (managedServer.status === ServerStatus.Disconnected) {
+                 managedServer.client = undefined;
+                 managedServer.transport = undefined;
+                 managedServer.capabilities = undefined;
+             }
              return;
         }
 
         logInfo(`[McpServerManager] Stopping server: ${serverId} (Current Status: ${managedServer.status})`);
-        const oldStatus = managedServer.status;
-        // Set status to disconnecting immediately? Or wait for confirmation? Let's wait.
+        const oldStatus = managedServer.status; // Store old status for potential comparison
+        this.updateServerStatus(serverId, ServerStatus.Stopping); // Set status to Stopping
+
+        let stopConfirmed = false;
+        const stopTimeoutMs = 3000; // Wait up to 3 seconds for graceful shutdown
 
         try {
-            if (managedServer.transport) {
-                 logDebug(`[McpServerManager-${serverId}] Closing SDK transport...`);
-                 await managedServer.transport.close();
-                 logInfo(`[McpServerManager-${serverId}] SDK transport close initiated.`);
+            // If we have an active SDK client/transport, use it to close
+            if (managedServer.client && managedServer.transport) {
+                logDebug(`[McpServerManager-${serverId}] Closing SDK transport...`);
+                // Initiate the close but don't wait for an event we can't listen for
+                managedServer.transport.close().catch(closeErr => {
+                     // Log error during close initiation, but proceed with timeout
+                     logError(`[McpServerManager-${serverId}] Error initiating transport close: ${getErrorMessage(closeErr)}`);
+                     // We might want to immediately set to Error status here? Or let timeout handle it?
+                     // Let's proceed to timeout for now.
+                 });
+                logInfo(`[McpServerManager-${serverId}] SDK transport close initiated. Waiting ${stopTimeoutMs}ms...`);
+
+                // Wait for the timeout duration
+                await new Promise(resolve => setTimeout(resolve, stopTimeoutMs));
+
+                logInfo(`[McpServerManager-${serverId}] Stop timeout reached. Updating status to Disconnected.`);
+                // Assume disconnected after timeout
+                this.updateServerStatus(serverId, ServerStatus.Disconnected, undefined, 'Stop timeout reached');
+                stopConfirmed = true; // Mark as confirmed after timeout
+
             } else {
-                 logDebug(`[McpServerManager-${serverId}] No active transport to stop.`);
+                // Handle cases where there's no active transport (e.g., server failed to start)
+                logWarning(`[McpServerManager-${serverId}] No active SDK transport found during stop. Setting status directly to Disconnected.`);
+                stopConfirmed = true; // No transport means it's effectively stopped/disconnected
+                this.updateServerStatus(serverId, ServerStatus.Disconnected);
             }
-            // The onclose handler should set the final Disconnected state.
-            // However, if disconnect() or close() throws, or if onclose doesn't fire,
-            // we might need to manually set the status.
-            // Let's optimistically assume onclose will fire. If issues persist, add manual update here.
 
         } catch (error) {
-             logError(`[McpServerManager-${serverId}] Error during disconnect/close: ${getErrorMessage(error)}`);
-             // Replace transport.process.pid with undefined
-             this.updateServerStatus(serverId, ServerStatus.Error, undefined, `Failed to stop cleanly: ${getErrorMessage(error)}`);
+            logError(`[McpServerManager-${serverId}] Error during stop process: ${getErrorMessage(error)}`);
+            // Set status to Error if stop fails critically
+             this.updateServerStatus(serverId, ServerStatus.Error, undefined, `Error during stop: ${getErrorMessage(error)}`);
+            stopConfirmed = true; // Consider it "stopped" (in an error state) to exit the logic
+
         } finally {
-             // Explicitly clear refs here in case onclose doesn't fire reliably after forceful stop/error
-             if (managedServer) { // Check again, might have been removed by event handlers
-                 managedServer.client = undefined;
-                 managedServer.transport = undefined;
-                 managedServer.capabilities = undefined;
-                 // If status wasn't set to Error or Disconnected by handlers, force Disconnected here?
-                 if (![ServerStatus.Error, ServerStatus.Disconnected].includes(managedServer.status)) {
-                      logWarning(`[McpServerManager-${serverId}] Forcing status to Disconnected after stop attempt.`);
-                      this.updateServerStatus(serverId, ServerStatus.Disconnected);
+            // --- Cleanup moved from the main logic ---
+            // Explicitly clear refs only after attempting stop and status update
+             if (managedServer) { // Check again, server might be removed elsewhere
+                // Clear transport/client regardless of success/failure, as we attempted to stop
+                managedServer.client = undefined;
+                managedServer.transport = undefined;
+                managedServer.capabilities = undefined; // Clear caps on stop
+                logDebug(`[McpServerManager-${serverId}] References cleaned up in finally block.`);
+                // Status should have been set correctly by try/catch block
+                 // No forced status update here anymore unless absolutely necessary
+                 if (!stopConfirmed && managedServer.status !== ServerStatus.Error) {
+                     // This case should ideally not be reached if timeout logic is correct
+                     logWarning(`[McpServerManager-${serverId}] FINALLY: Stop not confirmed and status not Error. Forcing Disconnected.`);
+                      this.updateServerStatus(serverId, ServerStatus.Disconnected, undefined, 'Forced disconnect in finally');
                  }
-             }
+            }
         }
     }
 
@@ -415,8 +421,7 @@ export class McpServerManager extends EventEmitter {
         for (const serverId of this.servers.keys()) {
             const status = this.getServerStatus(serverId);
             if (status) {
-                statuses.push(status);
-            }
+                statuses.push(status);            }
         }
         return statuses;
     }

@@ -108,7 +108,8 @@ export async function configureEnvironmentVariables(initialEnv: Record<string, s
         // LogManager.debug('[configureEnvironmentVariables]', 'Loop start. Current env:', env);
         const varName = await vscode.window.showInputBox({
             prompt: 'Enter environment variable name (leave empty to finish)',
-            placeHolder: 'e.g., API_KEY'
+            placeHolder: 'e.g., API_KEY',
+            ignoreFocusOut: true
         });
         // LogManager.debug('[configureEnvironmentVariables]', `Got varName: ${varName}`);
 
@@ -122,7 +123,8 @@ export async function configureEnvironmentVariables(initialEnv: Record<string, s
             // LogManager.debug('[configureEnvironmentVariables]', 'Prompting for varValue...');
             const varValue = await vscode.window.showInputBox({
                 prompt: `Enter value for ${varName}`,
-                placeHolder: `Current: ${env[varName] || 'Not set'}`
+                placeHolder: `Current: ${env[varName] || 'Not set'}`,
+                ignoreFocusOut: true
                 // value: env[varName], // Keep this line removed/commented
             });
             // LogManager.debug('[configureEnvironmentVariables]', `Returned from varValue input. varValue = ${varValue}`);

@@ -3,7 +3,6 @@
   "displayName": "MCP Server Manager",
   "description": "Manage Model Context Protocol (MCP) servers for AI assistants",
   "version": "0.1.0",
-  "type": "module",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -13,7 +12,7 @@
   "activationEvents": [
     "*"
   ],
-  "main": "./out/cjs/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
@@ -94,24 +93,32 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && tsc -p tsconfig.cjs.json",
-    "watch": "tsc -watch -p ./ & tsc -watch -p tsconfig.cjs.json",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6",
+    "@types/eventsource": "^1.1.15",
+    "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "^18.19.86",
     "@types/vscode": "^1.60.0",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^5.30.0",
     "@typescript-eslint/parser": "^5.30.0",
+    "esbuild": "^0.23.1",
     "eslint": "^8.18.0",
+    "marked": "^15.0.8",
     "typescript": "^5.8.3"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.1",
-    "dotenv": "^16.5.0"
+    "dotenv": "^16.5.0",
+    "eventsource": "^2.0.2",
+    "json-rpc-2.0": "^1.7.0",
+    "ws": "^8.18.1"
   }
 }

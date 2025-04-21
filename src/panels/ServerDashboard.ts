@@ -61,14 +61,16 @@ export class ServerDashboard {
         );
         
         // Listen for server status changes
-        this.serverManager.on('status', (event) => {
-            LogManager.debug('ServerDashboard', `Server status event received for ${event.serverId}: ${event.status}`);
+        this.serverManager.on('serverStatusChanged', (event) => {
+            LogManager.debug('ServerDashboard', `Server status changed event received for ${event.serverId}: ${event.status}`);
             this.updateWebviewContent();
         });
         
         // Listen for capabilities updates
-        this.serverManager.on('capabilities', (event) => {
-            LogManager.debug('ServerDashboard', `Capabilities received for ${event.serverId}`);
+        this.serverManager.on('capabilities', async (event) => {
+            LogManager.debug('ServerDashboard', `Capabilities received event for ${event.serverId}`);
+            const capabilities = this.configStorage.getServerCapabilities(event.serverId);
+            LogManager.debug('ServerDashboard', `Refetched capabilities for ${event.serverId} after event, timestamp: ${capabilities?.discoveredAt}`);
             this.updateWebviewContent();
         });
     }
@@ -145,6 +147,7 @@ export class ServerDashboard {
                     --status-connected: #4CAF50;
                     --status-disconnected: #F44336;
                     --status-connecting: #FFC107;
+                    --status-stopping: #FFA500;
                     --status-error: #F44336;
                 }
                 
@@ -197,6 +200,7 @@ export class ServerDashboard {
                 .status-connected { background: var(--status-connected); color: white; }
                 .status-disconnected { background: var(--status-disconnected); color: white; }
                 .status-connecting { background: var(--status-connecting); color: black; }
+                .status-stopping { background: var(--status-stopping); color: white; }
                 .status-error { background: var(--status-error); color: white; }
                 
                 .server-content {
@@ -341,6 +345,8 @@ export class ServerDashboard {
     }
     
     private generateServerCard(serverId: string, config: ServerConfig, capabilities?: CapabilityManifest, status: ServerStatus = ServerStatus.Disconnected): string {
+        LogManager.debug('ServerDashboard', `[generateServerCard] Rendering card for ${serverId} with status: ${status}`);
+        
         // Generate status badge
         let statusBadge = '';
         let statusClass = '';
@@ -354,6 +360,10 @@ export class ServerDashboard {
             case ServerStatus.Connecting:
                 statusClass = 'status-connecting';
                 statusText = 'Connecting';
+                break;
+            case ServerStatus.Stopping:
+                statusClass = 'status-stopping';
+                statusText = 'Stopping';
                 break;
             case ServerStatus.Error:
                 statusClass = 'status-error';
@@ -507,6 +517,8 @@ export class ServerDashboard {
         try {
             vscode.window.showInformationMessage(`Refreshing capabilities for server "${serverId}"...`);
             await this.serverManager.refreshCapabilities(serverId);
+            // Force a UI update to reflect the new capabilities timestamp
+            this.updateWebviewContent();
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to refresh capabilities: ${error instanceof Error ? error.message : String(error)}`);
         }

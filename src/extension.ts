@@ -7,7 +7,7 @@ import { McpServerManager } from './services/McpServerManager.js';
 import { ConfigStorage } from './services/ConfigStorage.js';
 import { ChatViewProvider } from './panels/ChatViewProvider.js';
 import { ServerDashboard } from './panels/ServerDashboard.js';
-import { parseArgumentsString } from './commands/ServerCommands.js';
+import { parseArgumentsString, configureEnvironmentVariables } from './commands/ServerCommands.js';
 import { ServerStatusEvent, ServerConfig, ModelRequest, ServerCapability, CapabilityItem } from './models/Types.js';
 
 // --- Local LLM Client Import ---
@@ -103,32 +103,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
     LogManager.info('Extension', 'Core services initialization block finished.');
 
-    // Initialize and Connect Local LLM Client
-    try {
-        LogManager.info('Extension', 'Initializing Local LLM Client...');
-        const config = vscode.workspace.getConfiguration('mcpServerManager');
-        const inferenceServerIp = config.get<string>('inferenceServerIp');
-        const inferenceServerPort = config.get<number>('inferenceServerPort');
-        LogManager.info('Extension', `Read IP/Port settings: IP = '${inferenceServerIp}', Port = ${inferenceServerPort}`); // Use IP/Port log
-
-        if (!inferenceServerIp || !inferenceServerPort) { // Check both IP and Port
-            LogManager.warn('Extension', 'Local LLM inference server IP or Port not configured. Local LLM features disabled.');
-            vscode.window.showWarningMessage('MCP: Inference Server IP and/or Port are not set in VS Code settings. Local LLM chat disabled.');
-        } else {
-            localLLMClient = new LocalLLMClient(mcpServerManager); // Ensure LLMClient is instantiated
-            LogManager.info('Extension', `Attempting to connect Local LLM Client to server at: ${inferenceServerIp}:${inferenceServerPort}`);
-            ChatViewProvider.instance?.updateChat(`Connecting to local inference server at ${inferenceServerIp}:${inferenceServerPort}...`);
-            await localLLMClient.connectToServer(inferenceServerIp, inferenceServerPort); // Pass IP and Port
-            LogManager.info('Extension', 'Local LLM Client connected successfully.');
-            ChatViewProvider.instance?.updateChat("Connected to local inference server. Ready for queries.");
-        }
-    } catch (error: any) {
-        console.error("!!! FAILED TO CONNECT LOCAL LLM CLIENT !!!", error);
-        LogManager.error('Extension', 'Failed to initialize or connect Local LLM Client', error);
-        vscode.window.showErrorMessage(`Failed to connect to local inference server: ${LogManager.getErrorMessage(error)}`);
-        ChatViewProvider.instance?.updateChat(`Error connecting to local inference server: ${LogManager.getErrorMessage(error)}`);
-        localLLMClient = undefined; // Ensure client is not used if connection failed
-    }
+    // Initialize Local LLM Client
+    LogManager.info('Extension', 'Initializing Local LLM Client...');
+    localLLMClient = new LocalLLMClient(mcpServerManager, context);
+    const inferenceServerIp = vscode.workspace.getConfiguration('mcpClient').get<string>('inferenceServerIp') || '127.0.0.1';
+    const inferenceServerPort = vscode.workspace.getConfiguration('mcpClient').get<number>('inferenceServerPort') || 8000;
+    localLLMClient.setConfig(inferenceServerIp, inferenceServerPort);
+    LogManager.info('Extension', `Read IP/Port settings: IP = '${inferenceServerIp}', Port = ${inferenceServerPort}`);
+    LogManager.info('Extension', `Local LLM Client configured for ${inferenceServerIp}:${inferenceServerPort}. Connection will be established on first query.`);
+    // We no longer connect immediately, connection happens on first query via processQuery
+    // try {
 
     // Register Chat View Provider (Sidebar)
     try {
@@ -172,25 +156,77 @@ export async function activate(context: vscode.ExtensionContext) {
                         placeHolder: 'e.g., my-local-llm',
                         ignoreFocusOut: true
                     });
-                    if (!serverName) return;
+                    if (!serverName) return; // User cancelled
+
+                    // Validate server name uniqueness
+                    if (configStorage.getServer(serverName)) {
+                        vscode.window.showErrorMessage(`Server name "${serverName}" already exists.`);
+                        return;
+                    }
+
                     const command = await vscode.window.showInputBox({
                         prompt: 'Enter the command to start the server',
-                        placeHolder: 'e.g., python -m my_server --port 8080',
-                        ignoreFocusOut: true
+                        placeHolder: 'e.g., python or npx',
+                        ignoreFocusOut: true,
+                        validateInput: (input) => input ? null : 'Command cannot be empty'
                     });
-                    if (!command) return;
+                    if (command === undefined) return; // User cancelled
+
                     const argsInput = await vscode.window.showInputBox({
                         prompt: 'Enter command arguments (optional, space-separated)',
-                        placeHolder: '--verbose --model llama3',
+                        placeHolder: 'e.g., -m my_module --port 8080',
                         ignoreFocusOut: true
                     });
+                    // No need to check if undefined, empty string is valid
                     const args = argsInput ? parseArgumentsString(argsInput) : [];
 
-                    const serverConfig: ServerConfig = { type: 'stdio', command, args, shell: true, windowsHide: true, env: {} };
+                    // Prompt for shell setting
+                    const useShell = await vscode.window.showQuickPick(['Yes', 'No'], {
+                        placeHolder: `Use shell to execute command? (Recommended: Yes for npx/complex commands)`, 
+                        ignoreFocusOut: true
+                    });
+                    if (useShell === undefined) return; // User cancelled
+                    const shell = useShell === 'Yes';
 
-                    await configStorage.saveServerConfig(serverName, serverConfig);
+                    // Prompt for hideWindow setting
+                    const hideWindow = await vscode.window.showQuickPick(['Yes', 'No'], {
+                        placeHolder: `Hide command window (Windows only)? (Recommended: Yes)`,
+                        ignoreFocusOut: true
+                    });
+                    if (hideWindow === undefined) return; // User cancelled
+                    const windowsHide = hideWindow === 'Yes';
+
+                    // Prompt for environment variables
+                    let env: Record<string, string> = {};
+                    const configureEnvChoice = await vscode.window.showQuickPick(['Yes', 'No'], {
+                        placeHolder: 'Configure environment variables now?',
+                        ignoreFocusOut: true
+                    });
+
+                    if (configureEnvChoice === undefined) return; // User cancelled
+
+                    if (configureEnvChoice === 'Yes') {
+                        // Use the imported helper function
+                        env = await configureEnvironmentVariables({}); // Start with empty env
+                    }
+
+                    // Construct the full server config
+                    const serverConfig: ServerConfig = { 
+                        type: 'stdio', 
+                        command, 
+                        args, 
+                        shell, 
+                        windowsHide, 
+                        env // Include collected env vars
+                    }; 
+
+                    // Use addOrUpdateServer to save the config
+                    await configStorage.addOrUpdateServer(serverName, serverConfig);
                     vscode.window.showInformationMessage(`Server "${serverName}" added successfully.`);
+                    // Trigger dashboard update
                     ServerDashboard.currentPanel?.updateWebviewContent();
+                    // Optionally attempt to start the server?
+                    // await mcpServerManager.startServer(serverName);
 
                 } catch (error) {
                     const errorMessage = LogManager.getErrorMessage(error);
@@ -354,27 +390,31 @@ export async function handleSendMessage(message: { text: string }, webviewProvid
     const componentName = 'handleSendMessage(LocalLLM)';
     LogManager.debug(componentName, `Triggered via ChatViewProvider`, message);
 
-    if (!localLLMClient) { // Check if the client object exists and is connected (implicitly checked by processQuery)
+    const mcpClient = getMcpClient(); // Get client instance
+
+    if (!mcpClient) { // Check if the client object exists
         LogManager.error(componentName, "Local LLM Client not initialized or connection failed.");
-        webviewProvider.updateChat("Error: Local LLM Client is not ready. Check configuration and logs.");
+        // No client, so no session ID. Pass null or fallback.
+        webviewProvider.updateChat("Error: Local LLM Client is not ready. Check configuration and logs.", 'global'); 
         return;
     }
 
+    // --- Get session ID for potential early errors --- 
+    const currentSessionId = mcpClient.getActiveSessionId() ?? 'global';
+
     try {
         LogManager.debug(componentName, 'Sending query to Local LLM Client...');
-        webviewProvider.updateChat("Processing with local LLM..."); // Indicate processing
-
-        // Call the Local LLM Client's processQuery method
-        // This method now internally handles LLM calls and MCP tool execution
-        const result = await localLLMClient.processQuery(message.text);
-        LogManager.info(componentName, 'Received final response from Local LLM Client');
-
-        // Display the final result
-        webviewProvider.updateChat(result); // Display the text response from the client
-
+        // Call the Local LLM Client's processQuery method, passing the provider
+        // No need to store result as it's void
+        await mcpClient.processQuery(message.text, webviewProvider);
+        LogManager.debug('handleSendMessage(LocalLLM)', `mcpClient.processQuery completed for message: ${message.text.substring(0, 20)}...`);
     } catch (error: any) {
-        LogManager.error(componentName, `Error in handleSendMessage with Local LLM Client`, error);
-        webviewProvider.updateChat(`An unexpected error occurred: ${LogManager.getErrorMessage(error)}`);
+        // Errors during the processQuery loop should now be caught within processQuery
+        // and sent to the UI via updateChatStream.
+        // This catch block might only handle errors during client lookup or initial checks.
+        LogManager.error(componentName, `Error in handleSendMessage or initial client checks`, error);
+        // Send a general error message if processQuery itself failed catastrophically
+        webviewProvider.updateChat(`An unexpected error occurred before processing could start: ${LogManager.getErrorMessage(error)}`, currentSessionId); // Use fetched session ID
     }
 }
 

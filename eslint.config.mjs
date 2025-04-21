@@ -15,10 +15,12 @@ export default [{
     },
 
     rules: {
-        "@typescript-eslint/naming-convention": ["warn", {
-            selector: "import",
-            format: ["camelCase", "PascalCase"],
-        }],
+        "@typescript-eslint/naming-convention": ["warn", [
+            {
+                selector: "import",
+                format: ["camelCase", "PascalCase"],
+            },
+        ]],
 
         curly: "warn",
         eqeqeq: "warn",
