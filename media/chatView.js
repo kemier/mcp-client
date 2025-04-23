@@ -13,6 +13,11 @@ const newChatButton = document.getElementById('new-chat-button'); // Get referen
 const sessionListUl = document.getElementById('session-list'); // Get session list UL element
 // const statusDiv = document.getElementById('server-status'); // Status hidden for now
 
+// --- Get references once (more robust) ---
+const msgInput = document.getElementById('message-input');
+const sndButton = document.getElementById('send-button');
+// ----------------------------------------
+
 // --- Explicitly clear input on load --- 
 if (messageInput) {
     messageInput.value = '';
@@ -119,6 +124,9 @@ function createMessageElement(role, textContent) {
 
 // --- Original Render History (clears and redraws ALL) ---
 function renderHistory(historyArray) {
+    // --- Add Log ---
+    console.log('[WebviewView] >>> renderHistory FUNCTION CALLED <<<');
+    // ---------------
     try {
         console.log('[WebviewView] renderHistory called (Full Redraw).');
         chatHistoryDiv.innerHTML = ''; // Clear current display
@@ -269,9 +277,15 @@ window.addEventListener('message', event => {
     const message = event.data; // The JSON data VS Code sent
     console.log('Message received from extension:', message);
 
+    // Ensure we have references (might need to re-get if not global)
+    const msgInput = document.getElementById('message-input');
+    const sndButton = document.getElementById('send-button');
+
     switch (message.command) {
         case 'syncHistory':
-            // <-- Update active session ID when history syncs
+            // --- Add Log ---
+            console.log('[WebviewView] >>> Received syncHistory command <<<'); 
+            // ---------------
             currentStreamingMessageElement = null; // Reset streaming element on history sync
             currentActiveSessionId = message.localSessionId;
             localChatHistory = message.history || [];
@@ -289,9 +303,46 @@ window.addEventListener('message', event => {
             // Pass the actual text content to appendAssistantChunk
             appendAssistantChunk(message.text); // <-- Use message.text
             break;
+        case 'addBotMessage':
+             // Ensure message is for the active session
+            if (message.sessionId !== currentActiveSessionId) {
+                console.warn(`[WebviewView] Discarding addBotMessage for inactive session ${message.sessionId} (active: ${currentActiveSessionId})`);
+                return;
+            }
+            console.log(`[WebviewView] Adding complete bot message for session ${message.sessionId}`);
+            // Stop any current streaming
+            currentStreamingMessageElement = null; 
+            // Create and append the new message element
+            const botMessageElement = createMessageElement('bot', message.text);
+            chatHistoryDiv.appendChild(botMessageElement);
+            // Scroll to bottom AGAIN after appending
+            setTimeout(() => { 
+                chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight; 
+                console.log('[WebviewView] Scrolled to bottom after adding bot message.');
+            }, 0);
+            break;
+        case 'updateProcessingStatus':
+            console.log(`[WebviewView] Received updateProcessingStatus: ${message.text}`);
+            const isProcessing = message.text && message.text.trim() !== '';
+            if (msgInput) {
+                msgInput.disabled = isProcessing;
+                console.log(`[WebviewView] msgInput.disabled set to: ${msgInput.disabled}`);
+                // --- Set focus if enabling ---
+                if (!isProcessing) {
+                    msgInput.focus();
+                    console.log(`[WebviewView] Attempted to set focus to msgInput.`);
+                }
+            }
+            if (sndButton) {
+                sndButton.disabled = isProcessing;
+                console.log(`[WebviewView] sndButton.disabled set to: ${sndButton.disabled}`);
+                // --- Change button text based on state ---
+                sndButton.textContent = isProcessing ? 'Sending...' : 'Send'; 
+            }
+            break;
         case 'setUserInput':
-            if (messageInput) {
-                messageInput.value = message.text;
+            if (msgInput) {
+                msgInput.value = message.text;
             }
             break;
         case 'clearChat':
@@ -409,21 +460,34 @@ window.addEventListener('DOMContentLoaded', (event) => {
 // Ensure handleSend and handleNewChat are defined correctly, accepting vscode
 function handleSend(vscode) { 
      console.log('[WebviewView] handleSend function executing...');
-     const chatInput = document.getElementById('message-input'); // <-- CHANGE ID HERE
-     // ... rest of handleSend logic
-     if (!chatInput) { 
-        console.error('[WebviewView] handleSend: Chat input (ID: message-input) not found!'); // <-- CHANGE ID HERE (in error log)
+     if (!msgInput) { 
+        console.error('[WebviewView] handleSend: Chat input (ID: message-input) not found!');
         return;
     }
-    const text = chatInput.value.trim();
+    const text = msgInput.value.trim();
     if (text) {
         console.log(`[WebviewView] handleSend: Sending message (Session: ${currentActiveSessionId}):`, text);
+        
+        // --- Disable input ---
+        if(msgInput) msgInput.disabled = true;
+        if(sndButton) {
+             sndButton.disabled = true;
+             sndButton.textContent = 'Sending...'; // Also change text here
+        }
+
+        // --- Optimistically add user message to UI --- 
+        const userMessageElement = createMessageElement('user', text);
+        chatHistoryDiv.appendChild(userMessageElement);
+        setTimeout(() => { chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight; }, 0);
+        // -------------------------------------------
+
+        // --- Send to extension --- 
         vscode.postMessage({
             command: 'sendMessage',
             text: text,
             localSessionId: currentActiveSessionId
         });
-        chatInput.value = '';
+        msgInput.value = ''; // Clear input AFTER sending
     } else {
         console.log('[WebviewView] handleSend: No text to send.');
     }

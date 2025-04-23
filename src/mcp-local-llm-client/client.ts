@@ -802,7 +802,7 @@ export class MCPClient {
         const currentUserTurn: ChatMessage = { role: 'user', content: query };
         this.sessions[sessionIndex].history.push(currentUserTurn);
         const historyForServer = [...this.sessions[sessionIndex].history]; // Full history for LLM
-        chatProvider.syncHistory(historyForServer, localSessionId);
+        // REMOVED: chatProvider.syncHistory(historyForServer, localSessionId);
 
         LogManager.info(this.componentName, `Sending generate request for session ${serverSessionId}`);
         this.currentTaskState = { localSessionId: localSessionId, accumulatedText: "", pendingToolCalls: [], finalTextFromServer: null }; // Reset task state
@@ -850,13 +850,42 @@ export class MCPClient {
 
     } catch (error: any) {
          LogManager.error(this.componentName, `Failed to process query: ${error.message}`, error);
-         chatProvider.updateChat(`[Error: ${error.message}]`, localSessionId);
-         // Revert optimistic user message
-         const lastMsgIndex = this.sessions[sessionIndex]?.history?.length - 1;
-         if(this.sessions[sessionIndex]?.history?.[lastMsgIndex]?.role === 'user') {
-            this.sessions[sessionIndex].history.pop(); 
-            chatProvider.syncHistory(this.sessions[sessionIndex].history, localSessionId);
+         
+         // Ensure session still exists before modifying history
+         const sessionIndex = this.sessions.findIndex(s => s.id === localSessionId);
+         if (sessionIndex !== -1) {
+             // Revert optimistic user message from internal history
+             const lastMsgIndex = this.sessions[sessionIndex].history.length - 1;
+             if(this.sessions[sessionIndex].history?.[lastMsgIndex]?.role === 'user') {
+                 LogManager.debug(this.componentName, `Popping optimistic user message due to error.`);
+                 this.sessions[sessionIndex].history.pop(); 
+             }
+
+             // --- Add Error Message to Internal History --- 
+             const errorText = `[Error: ${error.message}]`;
+             const errorMessage: ChatMessage = { role: 'assistant', content: errorText };
+             this.sessions[sessionIndex].history.push(errorMessage);
+             LogManager.debug(this.componentName, `Added error message to internal history for session ${localSessionId}.`);
+             // -------------------------------------------
+
+             // --- Save the updated history (with error, without failed user msg) ---
+             this.saveSessionsToStorage(); 
+             LogManager.debug(this.componentName, `Saved history with error message.`);
+             // -----------------------------------------------------------------------
+
+             // --- Send error directly to UI (NO syncHistory) ---
+             chatProvider.updateChat(errorText, localSessionId);
+             LogManager.debug(this.componentName, `Sent error message directly to webview via updateChat.`);
+             // --------------------------------------------------
+
+         } else {
+             LogManager.error(this.componentName, `Cannot add error to history or revert user message: Session ${localSessionId} not found in catch block.`);
+             // Fallback: Still try to show error in UI directly if session context is lost
+             chatProvider.updateChat(`[Error: ${error.message}]`, localSessionId ?? 'unknown_session');
          }
+
+         // --- Notify UI that processing stopped ---
+         chatProvider.updateStatus("");
     }
   } // End processQuery
 
@@ -958,12 +987,13 @@ export class MCPClient {
   private async filterTools(query: string, history: ChatMessage[], allTools: SimpleTool[]): Promise<SimpleTool[]> {
       const embeddingServerId = 'tool-matcher'; // <<<--- Make sure this matches your server config ID
       let rankedToolNames: string[] = [];
-  
+      LogManager.debug(this.componentName, `Entering filterTools. Query: ${query.substring(0,50)}..., History items: ${history.length}, All tools count: ${allTools.length}, Names: ${allTools.map(t=>t.name).join(', ')}`);
+
       // Ensure the embedding server itself is running before attempting to call it
       const serverStatusInfo = this.mcpServerManager.getServerStatus(embeddingServerId);
       if (!serverStatusInfo || serverStatusInfo.status !== ServerStatus.Connected) { 
           LogManager.warn(this.componentName, `Embedding server '${embeddingServerId}' is not connected (Status: ${serverStatusInfo?.status ?? 'Not Found'}). Skipping tool filtering via embedding server.`);
-          // Proceed to default fallback without calling the server
+          // Proceed without calling the server, default tools will be added later
       } else if (allTools.length === 0) {
             LogManager.debug(this.componentName, "FilterTools: No tools available to filter (excluding embedding server).");
             // Skip calling the embedding server if there are no tools to rank
@@ -998,36 +1028,36 @@ export class MCPClient {
                           LogManager.info(this.componentName, `Embedding server returned tools (parsed): [${rankedToolNames.join(", ")}]`);
                       } else {
                           LogManager.warn(this.componentName, `Parsed result from embedding server is not an array of strings:`, parsedResult);
-                          rankedToolNames = [];
+                          rankedToolNames = []; // Treat as no result if format is wrong
                       }
                   } catch (parseError: any) {
                        LogManager.error(this.componentName, `Failed to parse JSON result from embedding server: ${parseError.message}`, { rawString: resultJsonString });
-                       rankedToolNames = [];
+                       rankedToolNames = []; // Treat as no result on parse error
                   }
               } else {
                    LogManager.warn(this.componentName, `Embedding server returned unexpected data structure:`, result);
-                   rankedToolNames = []; 
+                   rankedToolNames = []; // Treat as no result if structure is wrong
               }
               // -------------------------
   
           } catch (error: any) {
               LogManager.error(this.componentName, `Error calling embedding server '${embeddingServerId}': ${error.message}`, error);
-              rankedToolNames = [];
+              rankedToolNames = []; // Treat as no result on call error
           }
       }
   
-      // --- Default Fallback Logic --- 
-      // Add fetch@fetch if embedding server returned no tools OR if it couldn't be called/failed
-      if (rankedToolNames.length === 0) {
-          LogManager.debug(this.componentName, "Embedding server returned no tools or failed. Adding default 'fetch@fetch'.");
-          const fetchTool = allTools.find(t => t.name === 'fetch@fetch');
-          if (fetchTool) {
-              if (!rankedToolNames.includes(fetchTool.name)) {
-                 rankedToolNames.push(fetchTool.name);
-              }
-          }
+      // --- Logic to ALWAYS ensure specific tools are included --- 
+      const defaultToolsToEnsure = ['fetch@fetch']; // Add any other tool names here if needed
+      // Example: const defaultToolsToEnsure = ['fetch@fetch', 'memory@search_nodes'];
+
+      for (const toolNameToEnsure of defaultToolsToEnsure) {
+        const toolExists = allTools.some(t => t.name === toolNameToEnsure);
+        if (toolExists && !rankedToolNames.includes(toolNameToEnsure)) {
+            LogManager.debug(this.componentName, `Ensuring default tool is included: ${toolNameToEnsure}`);
+            rankedToolNames.push(toolNameToEnsure);
+        }
       }
-      // ----------------------------
+      // ----------------------------------------------------------
   
       // Map the final list of names back to SimpleTool objects, preserving server order
       const finalFilteredTools = rankedToolNames
