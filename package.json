@@ -3,6 +3,8 @@
   "displayName": "MCP Server Manager",
   "description": "Manage Model Context Protocol (MCP) servers for AI assistants",
   "version": "0.1.0",
+  "publisher": "LocalSpark",
+  "icon": "src/assets/icon.jpg",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -10,44 +12,44 @@
     "Other"
   ],
   "activationEvents": [
-    "*"
+    "onView:mcpChatView"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "mcpServerManager.showDashboard",
-        "title": "MCP: Show Server Dashboard",
+        "title": "MCP: Show Server Management Dashboard (Webview)",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.addServer",
-        "title": "MCP: Add Server",
+        "title": "MCP: Add a New Tool Server Configuration",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.startServer",
-        "title": "MCP: Start Server",
+        "title": "MCP: Start a Configured Tool Server",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.stopServer",
-        "title": "MCP: Stop Server",
+        "title": "MCP: Stop a Running Tool Server",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.removeServer",
-        "title": "MCP: Remove Server",
+        "title": "MCP: Remove a Tool Server Configuration",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.refreshCapabilities",
-        "title": "MCP: Refresh Server Capabilities",
+        "title": "MCP: Refresh Capabilities List from a Server",
         "category": "MCP Server Manager"
       },
       {
         "command": "mcpServerManager.showLogs",
-        "title": "MCP: Show Logs",
+        "title": "MCP: Show Extension Output Channel Logs",
         "category": "MCP Server Manager"
       }
     ],
@@ -57,17 +59,23 @@
         "mcpServerManager.autoStartServers": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically start all configured MCP tool servers when the extension activates."
+          "description": "If enabled, automatically attempts to start all configured MCP tool servers when the VS Code window loads or the extension activates."
         },
         "mcpServerManager.inferenceServerIp": {
           "type": "string",
           "default": "127.0.0.1",
-          "description": "The IP address of the running local LLM inference server (NOTE: Currently unused by the extension connection logic)."
+          "description": "Specifies the IP address where the main LLM inference server (e.g., running Oobabooga, Ollama with MCP adapter) is listening. This is used by the MCP Chat client to connect."
         },
         "mcpServerManager.inferenceServerPort": {
           "type": "number",
           "default": 8080,
-          "description": "The port number of the running local LLM inference server (NOTE: Currently unused by the extension connection logic)."
+          "description": "Specifies the Port number where the main LLM inference server is listening. This is used by the MCP Chat client to connect."
+        },
+        "mcpServerManager.logLevel": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARN", "ERROR"],
+          "default": "INFO",
+          "description": "Controls the verbosity of logs sent to the MCP Output Channel. DEBUG provides the most detail."
         }
       }
     },
