@@ -1,6 +1,6 @@
 # MCP Config Assistant - VS Code Extension
 
-This Visual Studio Code extension provides tools to manage Model Context Protocol (MCP) servers and facilitates interaction with a **local Large Language Model (LLM) inference server**. Communication with the local LLM server happens via **HTTP JSON-RPC**, while communication with MCP tool servers primarily happens via standard I/O (stdio).
+This Visual Studio Code extension provides tools to manage Model Context Protocol (MCP) servers and facilitates interaction with a **local Large Language Model (LLM) inference server**. Communication with the local LLM server happens via **WebSocket JSON-RPC**, while communication with MCP tool servers primarily happens via standard I/O (stdio).
 
 ## Core Features
 
@@ -18,26 +18,28 @@ This Visual Studio Code extension provides tools to manage Model Context Protoco
     *   Automatically sends `capability_request` to MCP tool servers upon connection.
     *   Receives and stores `capability_response` from servers, detailing available capabilities (tools).
     *   Allows manual refreshing of capabilities via the dashboard or command palette.
-*   **Local LLM Integration (via HTTP JSON-RPC):**
-    *   Connects to a **running** local LLM inference process via a specified **IP address and Port**.
+*   **Local LLM Integration (via WebSocket JSON-RPC):**
+    *   Connects to a **running** local LLM inference process via a specified **IP address and Port** using WebSocket.
     *   Requires configuring the IP and Port in VS Code settings (`mcpServerManager.inferenceServerIp`, `mcpServerManager.inferenceServerPort`).
-    *   Handles communication between the extension's chat interface and the local LLM process by sending JSON-RPC requests to the server's `/rpc` endpoint.
+    *   Handles communication between the extension's chat interface and the local LLM process by sending JSON-RPC requests over WebSocket. The server should expose methods like `generate` and handle notifications.
 *   **Dynamic Tool Use (LLM + MCP Servers):**
     *   The integrated `MCPClient` library discovers capabilities (tools) from:
-        *   The **LLM Inference Server itself** (by calling its `tool_list` method).
         *   All currently *connected* MCP tool servers managed by `McpServerManager`.
-    *   This combined list of tools is sent to the local LLM within the `create_message` request.
-    *   The local LLM decides when to use these tools, responding with `type: "tool_calls"`.
+        *   An optional `tools-matcher` server can be used to rank/filter relevant tools.
+    *   This combined list of tools is sent to the local LLM within the `generate` request's `tools` parameter (OpenAI format).
+    *   The local LLM decides when to use these tools, responding with a `function_call_request` notification, which includes a `tool_call` object containing an `id`, `tool` (name), and `parameters`.
     *   The `MCPClient` executes requested tool calls:
-        *   Calls to *managed servers* (e.g., `github@search_repositories`) are dispatched via `McpServerManager`.
-        *   Calls to tools hosted on the *inference server* itself are currently logged as unimplemented.
-    *   Results (or errors) from tool executions are sent back to the LLM in a subsequent `create_message` request within the `tool_results` parameter.
-    *   **Multi-Step Tool Calls:** The client supports loops where the LLM can make multiple sequential tool calls before generating the final response (`type: "final_text"`).
-    *   **Result Truncation:** If a tool result is very large (e.g., a large API response), the client truncates it before sending it back to the LLM to prevent request failures.
+        *   Calls to *managed MCP servers* (e.g., `github@search_repositories`) are dispatched via `McpServerManager`.
+    *   Results (or errors) from tool executions are sent back to the LLM via a `tool_result` JSON-RPC request. Each item in the `results` array includes the original `tool_call_id`, the `tool_name`, and the `result` or `error`.
+    *   **Multi-Step Tool Calls:** The client supports loops where the LLM can make multiple sequential tool calls (each resulting in a `function_call_request` and subsequent `tool_result`) before generating the final textual response (signaled by an `end` notification with `final_text`).
+    *   **Result Summarization:** For specific tools like `github@search_repositories`, the client may summarize or truncate large results before sending them back to the LLM.
 *   **Conversation History Management:**
     *   The `MCPClient` maintains conversation history across multiple turns within a single session.
-    *   The history (including the latest user message) is sent to the LLM with each `create_message` request.
-    *   The history returned by the LLM is stored for the next turn.
+    *   The history (including the latest user message, assistant tool call requests, and tool results) is sent to the LLM with each `generate` request.
+        *   User messages are `role: "user"`.
+        *   Assistant messages requesting tools include `role: "assistant"` and a `tool_calls` array (OpenAI format).
+        *   Tool execution results are sent as `role: "tool"` messages, including the `tool_call_id` and `tool_name` corresponding to the request, and the `content` (stringified result or error).
+    *   The LLM server is expected to handle this history format.
     *   **New Chat Functionality:** A "New Chat" button in the UI allows clearing the client-side conversation history (`MCPClient.startNewChat()`) to start a fresh context with the LLM.
 *   **Chat Interface:**
     *   A dedicated Chat View in the VS Code sidebar (`MCP Chat`).
@@ -53,13 +55,16 @@ This Visual Studio Code extension provides tools to manage Model Context Protoco
 *   Visual Studio Code (latest version recommended).
 *   **A running local LLM inference server:**
     *   This server must be running independently and listening on a specific IP address and port.
-    *   It **must** expose an HTTP endpoint at `/rpc` that accepts JSON-RPC 2.0 requests via POST.
-    *   It **must** implement the following methods:
-        *   `tool_list`: Takes no parameters, returns `{"tools": [...]}` where each tool has `name`, `description`, `inputSchema`. Can return an empty list `[]` if the server hosts no tools itself.
-        *   `create_message`: Accepts parameters including `message` (string, optional), `tools` (array of available tools), `history` (array of previous turns), `tool_results` (array of results from previous tool calls). Returns a JSON object with:
-            *   `type`: Either `"tool_calls"` or `"final_text"`.
-            *   `content`: If `tool_calls`, an array of `{"tool": "tool_name", "parameters": {...}}`. If `final_text`, the string response.
-            *   `history`: The updated conversation history including the latest assistant response/tool call request and any tool results.
+    *   It **must** support WebSocket connections (e.g., at an endpoint like `/ws/{session_id}`).
+    *   It **must** implement JSON-RPC 2.0 over WebSocket.
+    *   Key interactions include:
+        *   An initial HTTP endpoint (e.g., `/create_session`) that might accept a list of available tools and returns a `session_id`.
+        *   A `generate` JSON-RPC method: Accepts `history` (array of messages) and `tools` (array of available tools in OpenAI format).
+            *   The `history` messages should conform to roles: `user`, `assistant` (can include `tool_calls`), and `tool` (must include `tool_call_id`, `tool_name`, and `content`).
+        *   It should send notifications back to the client over WebSocket, such as:
+            *   `function_call_request`: When the LLM wants to call a tool. Params should include `task_id`, `session_id`, and `tool_call` (with `id`, `tool` name, `parameters`).
+            *   `text_chunk`: For streaming parts of the textual response.
+            *   `end`: To signal the end of a turn, providing `final_text` if applicable, or indicating an error.
 *   Necessary environment and libraries for your chosen inference server.
 *   Access to one or more MCP-compatible tool servers (e.g., filesystem, github, time) that you want the local LLM to use.
 
@@ -75,7 +80,7 @@ This Visual Studio Code extension provides tools to manage Model Context Protoco
 
 ## Usage
 
-1.  **Start Local Inference Server:** Ensure your local LLM HTTP server is running, listening on the configured IP/port, and implementing the required `/rpc` endpoint and methods (`tool_list`, `create_message`).
+1.  **Start Local Inference Server:** Ensure your local LLM HTTP server is running, listening on the configured IP/port, and implementing the required `/ws/{session_id}` endpoint and methods (`generate`).
 2.  **Configure Extension:** Set the correct `Inference Server Ip` and `Inference Server Port` in VS Code settings.
 3.  **Add MCP Tool Servers:** Use the `MCP Server Manager: Add Server` command or the dashboard to configure any MCP *tool servers* you want the LLM to use.
     *   *Example Tool Server Command (Filesystem):* `npx -y @modelcontextprotocol/server-filesystem C:\path\to\allowed\dir`

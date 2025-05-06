@@ -10,8 +10,21 @@ import {
     ServerStatus, ServerConfig, ChatSession, SimpleTool, FunctionCallRequest, ToolResult, SessionResponse, ChatMessage, ChatSessionMetadata,
     // Import the new notification param types
     TextChunkNotificationParams, FinalTextNotificationParams, FunctionCallRequestNotificationParams,
-    StatusNotificationParams, ErrorNotificationParams, EndNotificationParams
+    StatusNotificationParams, ErrorNotificationParams, EndNotificationParams,
+    ServerStatusEvent
 } from '../models/Types.js';
+
+// Local interface for generate RPC parameters
+interface GenerateParams {
+    history: Array<{
+        role: string;
+        content?: string;
+        tool_calls?: any[];
+        tool_call_id?: string;
+        tool_name?: string; 
+    }>;
+    tools: any[];
+}
 
 // --- Constants for storage (kept from original) ---
 const SESSION_STORAGE_KEY = 'mcpChatSessions';
@@ -22,6 +35,23 @@ const MAX_SESSIONS = 5; // Keep session limit
 /** Removes <think> tags from LLM output */
 function cleanLLMOutput(text: string): string {
     return (text || '').replace(/<\/?think>/g, '');
+}
+
+/** Helper function to format tools for the LLM server */
+function mapToolsForLLM(tools: SimpleTool[]): any[] {
+    return tools.map(tool => {
+        const baseName = tool.name.includes('@') ? tool.name.split('@')[1] : tool.name;
+        return {
+            // Assuming LLM expects structure like OpenAI: { type: 'function', function: { name: ..., description: ..., parameters: ... } }
+            // Adjust if your LLM server expects a different format
+            type: 'function', 
+            function: {
+                name: baseName,
+                description: tool.description,
+                parameters: tool.inputSchema // Assuming inputSchema matches LLM's parameter schema needs
+            }
+        };
+    });
 }
 
 // --- Refactored MCP Client Class (WebSocket + JSON-RPC) ---
@@ -446,18 +476,32 @@ export class MCPClient {
      });
      this.notificationHandlers.set('function_call_request', (params: any) => {
          LogManager.debug(this.componentName, "--- ENTERING function_call_request handler ---"); // Add entry log
-         // Log from server indicates params looks like: { session_id: ..., task_id: ..., tool_call: { tool: ..., parameters: ...} }
-         // Adjust to check for params.tool_call instead of params.call_info
-         const toolCallInfo = params.tool_call; // <-- Use tool_call
-         LogManager.info(this.componentName, `Handling 'function_call_request' for tool: ${toolCallInfo?.tool_name}`);
+         // Server sends: { session_id: ..., task_id: ..., tool_call: { id: ..., tool: ..., parameters: ...} }
+         // ---- MODIFICATION START: Adjust expected type and access ----
+         const toolCallInfo = params.tool_call as { id: string, tool: string, parameters: any }; // Expect 'tool' key
+         LogManager.info(this.componentName, `Handling 'function_call_request' for tool: ${toolCallInfo?.tool}, ID: ${toolCallInfo?.id}`); // Log 'tool'
+         // Log the received structure for verification
+         LogManager.debug(this.componentName, 'Received tool_call structure:', toolCallInfo);
+         // ---- MODIFICATION END ----
+
          const taskState = this.currentTaskState;
          if (taskState) {
              const chatProvider = ChatViewProvider.instance; // Get current instance
-             if (toolCallInfo) { // <-- Check toolCallInfo
-                taskState.pendingToolCalls.push(toolCallInfo as FunctionCallRequest);
-                chatProvider?.updateStatus(`Requesting tool: ${toolCallInfo.tool_name}...`);
+             // ---- MODIFICATION START: Check for id, tool ----
+             if (toolCallInfo && toolCallInfo.id && toolCallInfo.tool) { // Check 'tool' key
+                // Construct the object matching FunctionCallRequest, ensuring ID is stored
+                const pendingCall: FunctionCallRequest = {
+                    id: toolCallInfo.id, // Store the ID from the server
+                    tool_name: toolCallInfo.tool, // Store name under tool_name internally
+                    parameters: toolCallInfo.parameters
+                    // function: { name: toolCallInfo.tool, arguments: JSON.stringify(toolCallInfo.parameters || {}) } 
+                };
+                taskState.pendingToolCalls.push(pendingCall); 
+                LogManager.debug(this.componentName, `Added pending tool call with ID: ${pendingCall.id}`);
+             // ---- MODIFICATION END ----
+                chatProvider?.updateStatus(`Requesting tool: ${toolCallInfo.tool}...`); // Use 'tool' for status message
              } else {
-                 LogManager.warn(this.componentName, `Received function_call_request notification without valid tool_call structure.`);
+                 LogManager.warn(this.componentName, `Received function_call_request notification without valid tool_call structure (missing id or tool?).`, params.tool_call);
              }
          } else {
             LogManager.warn(this.componentName, `Received function_call_request but no active task state.`);
@@ -536,7 +580,18 @@ export class MCPClient {
              assistantTurn = {
                  role: 'assistant',
                  content: finalContentForHistory,
-                 ...(taskState.pendingToolCalls.length > 0 && { tool_calls: taskState.pendingToolCalls })
+                 // ---- MODIFICATION START: Transform pending calls for history ----
+                 ...(taskState.pendingToolCalls.length > 0 && {
+                     tool_calls: taskState.pendingToolCalls.map(call => ({
+                         id: call.id || call.tool_call_id || 'missing_id', // Ensure ID is present, use placeholder if missing
+                         type: 'function', 
+                         function: {
+                             name: call.tool_name || call.function?.name || 'missing_name', // Get name
+                             arguments: JSON.stringify(call.parameters || {}), // Stringify parameters for arguments field
+                         }
+                     }))
+                 })
+                 // ---- MODIFICATION END ----
              };
              assistantMessageCreated = true;
          } else {
@@ -572,18 +627,25 @@ export class MCPClient {
                  
                  await this._sendToolResults(serverSessionId, params.task_id, toolResults);
                  
-                 // --- FIX: Add tool result to history --- 
-                 const toolResultTurn: ChatMessage = {
-                     role: 'tool',
-                     // We need to structure the content to match expected format, 
-                     // often a stringified JSON or similar, based on how the LLM expects it.
-                     // For now, let's store the array directly. Review LLM reqs if needed.
-                     content: JSON.stringify(toolResults) // <-- Stringify results
-                 };
-                 // FIX: Always add tool result message after the assistant message with tool_calls
-                 this.sessions[sessionIndex].history.push(toolResultTurn);
-                 LogManager.debug(this.componentName, `Added tool result message to history.`);
-                 // ----------------------------------------
+                 // --- FIX: Add individual tool result messages to history ---
+                 for (const toolResult of toolResults) {
+                     const toolMessage: ChatMessage = {
+                         role: 'tool',
+                         tool_call_id: toolResult.tool_call_id,
+                         name: toolResult.tool_name,
+                         // Ensure content is a string, as expected by the Pydantic model for ToolMessage content
+                         content: toolResult.error 
+                             ? JSON.stringify({ error: toolResult.error }) 
+                             : (toolResult.result !== undefined ? JSON.stringify(toolResult.result) : "null"), // Send "null" if result is undefined
+                         // 'name' is not part of the 'tool' role message sent to the LLM according to OpenAI spec,
+                         // but tool_name from ToolResult was used by the server-side ToolMessage model indirectly.
+                         // The server Pydantic model for ToolMessage is: role, content, tool_call_id.
+                         // The name of the tool is implicit via the tool_call_id linking to the assistant's tool_call.
+                     };
+                     this.sessions[sessionIndex].history.push(toolMessage);
+                     LogManager.debug(this.componentName, `Added tool message to history for tool_call_id: ${toolResult.tool_call_id}`);
+                 }
+                 // -----------------------------------------------------------
 
                  chatProvider?.syncHistory(this.sessions[sessionIndex].history, currentLocalId); // Sync UI
                  this.updateSessionTitleIfNeeded(sessionIndex);
@@ -715,7 +777,7 @@ export class MCPClient {
     LogManager.debug(this.componentName, `Found ${managedServers.length} connected managed servers.`);
     managedServers.forEach(({ serverId, capabilities }) => {
       // --- IMPORTANT: Exclude the embedding server itself from the list of tools sent to the LLM ---
-      if (serverId === 'tool-matcher') { // Use the actual ID of your embedding server
+      if (serverId === 'tools-matcher') { // Use the actual ID of your embedding server
           LogManager.debug(this.componentName, `Skipping tools from embedding server '${serverId}'.`);
           return; 
       }
@@ -779,7 +841,7 @@ export class MCPClient {
             LogManager.debug(this.componentName, "Requesting new server session via HTTP /create_session");
             const sessionResponse = await this._fetchJSON<SessionResponse>('/create_session', {
                 method: 'POST',
-                body: JSON.stringify({ tools: this.allToolsForLLM }) // Send client tools for potential server use
+                body: JSON.stringify({ tools: mapToolsForLLM(this.allToolsForLLM) }) 
             });
             serverSessionId = sessionResponse.session_id;
             this.activeServerSessionId = serverSessionId; // Store the new active server ID
@@ -798,55 +860,85 @@ export class MCPClient {
              throw new Error("JSON-RPC Client not initialized after connection attempt.");
         }
 
-        // Add user message to local history (optimistic update)
-        const currentUserTurn: ChatMessage = { role: 'user', content: query };
-        this.sessions[sessionIndex].history.push(currentUserTurn);
-        const historyForServer = [...this.sessions[sessionIndex].history]; // Full history for LLM
-        // REMOVED: chatProvider.syncHistory(historyForServer, localSessionId);
-
         LogManager.info(this.componentName, `Sending generate request for session ${serverSessionId}`);
-        this.currentTaskState = { localSessionId: localSessionId, accumulatedText: "", pendingToolCalls: [], finalTextFromServer: null }; // Reset task state
-
-        // --- Prepare and send the generate request ---
-        LogManager.info(this.componentName, `Sending generate request for session ${this.activeServerSessionId}`);
+        // Add user query to history (optimistically, might be popped on error)
+        const currentSession = this.sessions[sessionIndex];
         
-        // Filter tools if embedding server is available
-        let toolsForRequest = this.allToolsForLLM;
-        try {
-            // Pass the current query and history to filterTools
-            toolsForRequest = await this.filterTools(query, historyForServer, this.allToolsForLLM); 
-        } catch (filterError: any) {
-            LogManager.warn(this.componentName, `Tool filtering failed: ${filterError.message}. Using all ${this.allToolsForLLM.length} tools.`);
-            toolsForRequest = this.allToolsForLLM; // Fallback to all tools on error
+        // --- Add user message to local history if not a retry ---
+        // Check if the last message is already this user query (e.g. from a previous failed attempt)
+        const lastMessage = currentSession.history[currentSession.history.length - 1];
+        if (!(lastMessage && lastMessage.role === 'user' && lastMessage.content === query)) {
+            currentSession.history.push({ role: 'user', content: query });
+            LogManager.debug(this.componentName, "Added user message to local history.");
+        } else {
+            LogManager.debug(this.componentName, "User message already in history, not adding again.");
+        }
+        // -------------------------------------------------------
+
+        chatProvider.syncHistory(currentSession.history, localSessionId); // Update UI with user message
+
+        // Filter tools based on the query and current history
+        // Note: currentHistoryForFilter should ideally be the history *before* adding the current user query if the filter needs that.
+        // For now, using the full currentSession.history.
+        const currentHistoryForFilter = [...currentSession.history]; 
+        const toolsForRequest = await this.filterTools(query, currentHistoryForFilter, this.allToolsForLLM);
+        LogManager.info(this.componentName, `Sending ${toolsForRequest.length} tools to LLM: ${JSON.stringify(toolsForRequest.map(t=>t.name))}`);
+        
+        // --- Prepare history for the server (map to server-expected format) ---
+        const historyForGenerate = currentSession.history.map(msg => {
+            const serverMsg: any = { role: msg.role };
+            if (msg.role === 'user') {
+                serverMsg.content = msg.content || '';
+            } else if (msg.role === 'assistant') {
+                serverMsg.content = msg.content === undefined ? '' : msg.content; // Default content to empty string
+                if (msg.tool_calls && msg.tool_calls.length > 0) {
+                    serverMsg.tool_calls = msg.tool_calls;
+                }
+            } else if (msg.role === 'tool') {
+                serverMsg.tool_call_id = msg.tool_call_id;
+                serverMsg.tool_name = msg.name; // Map client 'name' to server 'tool_name'
+                serverMsg.content = msg.content || '';
+            }
+            // Filter out any messages not conforming to user, assistant, or tool roles, or if they became undefined.
+            // This shouldn't happen if currentSession.history is well-formed with only these roles.
+            return (['user', 'assistant', 'tool'].includes(serverMsg.role)) ? serverMsg : null;
+        }).filter(Boolean) as any[]; // Filter out nulls and cast
+        // --------------------------------------------------------------------
+
+        const generateParams: GenerateParams = {
+            history: historyForGenerate, // Use the mapped history
+            tools: toolsForRequest.map(tool => mapToolsForLLM([tool])[0]), // Ensure tools are in OpenAI format
+            // TODO: Add other parameters like model, temperature, max_tokens if supported
+        };
+
+        // Store current task details
+        // If there's an existing task state for this session, use it, otherwise create new
+        if (!this.currentTaskState || this.currentTaskState.localSessionId !== localSessionId) {
+            LogManager.debug(this.componentName, `Creating new task state for session ${localSessionId}. Previous task state session: ${this.currentTaskState?.localSessionId}`);
+            this.currentTaskState = { 
+                localSessionId: localSessionId,
+                accumulatedText: '',
+                pendingToolCalls: [],
+                finalTextFromServer: null,
+            };
+        } else {
+            LogManager.debug(this.componentName, `Reusing existing task state for session ${localSessionId}. Clearing previous tool calls/text.`);
+            this.currentTaskState.accumulatedText = '';
+            this.currentTaskState.pendingToolCalls = [];
+            this.currentTaskState.finalTextFromServer = null;
         }
 
-        // Reset task state for the new request
-        this.currentTaskState = {
-            localSessionId: this.activeSessionId!,
-            accumulatedText: "",
-            pendingToolCalls: [],
-            finalTextFromServer: null
-        };
 
-        // Log the tools being sent to the LLM
-        const toolNamesForLog = toolsForRequest.map(t => t.name);
-        LogManager.info(this.componentName, `Sending ${toolNamesForLog.length} tools to LLM:`, toolNamesForLog);
+        LogManager.debug(this.componentName, `Final history length: ${generateParams.history.length} messages`);
+        LogManager.debug(this.componentName, `Final tool list length: ${generateParams.tools.length} tools`);
 
-        // Send the request
-        LogManager.debug(this.componentName, `Final history length: ${historyForServer.length} messages`);
-
-        // --- Prepare and send the generate request ---
-        const generateParams = {
-            history: historyForServer, // Send full history to LLM
-            tools: toolsForRequest // <<< Use list from embedding server
-        };
-        
-        LogManager.debug(this.componentName, `Final history length: ${historyForServer.length} messages`);
-        LogManager.debug(this.componentName, `Final tool list length: ${toolsForRequest.length} tools`);
+        // --- Log the history being sent for diagnosis ---
+        LogManager.debug(this.componentName, "History being sent to LLM:", JSON.stringify(generateParams.history, null, 2));
+        // ----------------------------------------------
 
         const ack = await this.jsonRpcClient.request("generate", generateParams);
         LogManager.info(this.componentName, `'generate' request sent. Ack received:`, ack); 
-        chatProvider.updateStatus("Generating response...");
+        chatProvider.updateStatus("Assistant is thinking...");
 
     } catch (error: any) {
          LogManager.error(this.componentName, `Failed to process query: ${error.message}`, error);
@@ -893,35 +985,54 @@ export class MCPClient {
   private async executeToolCalls(toolCalls: FunctionCallRequest[]): Promise<ToolResult[]> {
        LogManager.debug(this.componentName, `Executing ${toolCalls.length} tool calls...`);
        const toolResults: ToolResult[] = [];
-       for (const call of toolCalls) {
-           // Adjust to read from call.tool, which is what the server sends in tool_call
-           const toolIdentifier = (call as any).tool || call.tool_name; // Prioritize 'tool', fallback to 'tool_name' for safety
-           const parameters = call.parameters;
-           // Ensure tool_call_id exists, even if null/undefined initially
-           const toolCallId = (call as any).tool_call_id || 'temp-' + Math.random().toString(36).substring(2, 9); // Generate temporary ID if missing
+       
+       // Create a quick lookup map from base tool name to full tool name
+       const toolNameMap = new Map<string, string>();
+       this.allToolsForLLM.forEach(tool => {
+           const baseName = tool.name.includes('@') ? tool.name.split('@')[1] : tool.name;
+           toolNameMap.set(baseName, tool.name);
+       });
 
-           LogManager.debug(this.componentName, `Processing tool call:`, { toolIdentifier, parameters, toolCallId }); // Log details
+       for (const call of toolCalls) {
+           // The LLM should now send the *base* tool name (e.g., "search_users")
+           // Adjust to read from call.function.name based on typical OpenAI structure
+           const baseToolName = (call as any).function?.name || (call as any).tool || call.tool_name; 
+           const parameters = (call as any).function?.arguments ? JSON.parse((call as any).function.arguments) : call.parameters; // Handle OpenAI's arguments structure
+           // Ensure tool_call_id exists - use call.id from OpenAI structure if present
+           const toolCallId = call.id || (call as any).tool_call_id || 'temp-' + Math.random().toString(36).substring(2, 9); // Generate temporary ID if missing
+
+           LogManager.debug(this.componentName, `Processing tool call:`, { baseToolName, parameters, toolCallId }); // Log details
+
+           // Find the full internal tool identifier (serverId@toolName) using the map
+           const fullToolIdentifier = toolNameMap.get(baseToolName);
 
            let result: ToolResult = {
-               tool_call_id: toolCallId,
-               tool_name: toolIdentifier
+               tool_call_id: toolCallId, // Use the ID received from the LLM
+               tool_name: baseToolName // Report the base name back? Or full name? Let's stick to base for now. Check server reqs.
+               // tool_name: fullToolIdentifier || baseToolName // Option: report full name if found
            };
 
-           if (typeof toolIdentifier !== 'string') { // Add check if toolIdentifier is valid
-                LogManager.error(this.componentName, 'Tool identifier is missing or not a string in tool call:', call);
-                result.error = "Tool identifier missing or invalid in request.";
-           } else if (toolIdentifier.includes('@')) {
-               const [serverId, toolName] = toolIdentifier.split('@');
-               if (!serverId || !toolName) {
-                   result.error = "Invalid managed tool identifier format";
+           if (!baseToolName) {
+                LogManager.error(this.componentName, 'Tool name is missing in tool call:', call);
+                result.error = "Tool name missing in request.";
+           } else if (!fullToolIdentifier) {
+                LogManager.error(this.componentName, `Could not find server for tool '${baseToolName}' in internal map.`);
+                result.error = `Tool '${baseToolName}' not found or server unavailable.`;
+           } else if (fullToolIdentifier.includes('@')) {
+               const [serverId, actualToolName] = fullToolIdentifier.split('@'); // Use 'actualToolName' from the split
+               if (!serverId || !actualToolName) {
+                   result.error = "Invalid internal tool identifier format found in map";
+                   LogManager.error(this.componentName, `Invalid format for mapped tool identifier: ${fullToolIdentifier}`);
                } else {
                    try {
-                       // Original call to the server manager
-                       const rawResult = await this.mcpServerManager.callServerMethod(serverId, toolName, parameters || {});
+                       // Call using the mapped serverId and the actual tool name part
+                       LogManager.debug(this.componentName, `Routing call for '${baseToolName}' to server '${serverId}', method '${actualToolName}'`);
+                       const rawResult = await this.mcpServerManager.callServerMethod(serverId, actualToolName, parameters || {});
                        
                        // --- Start: Special handling for github@search_repositories ---
-                       if (toolIdentifier === 'github@search_repositories') {
-                           LogManager.debug(this.componentName, `Processing result specifically for ${toolIdentifier}...`);
+                       // Check using the full identifier now
+                       if (fullToolIdentifier === 'github@search_repositories') {
+                           LogManager.debug(this.componentName, `Processing result specifically for ${fullToolIdentifier}...`);
                            try {
                                // Assuming rawResult follows the structure seen in logs: { content: [{ type: 'text', text: 'JSON_STRING' }] }
                                if (rawResult && Array.isArray(rawResult.content) && rawResult.content.length > 0 && rawResult.content[0].type === 'text') {
@@ -969,13 +1080,16 @@ export class MCPClient {
                        // --- End: Special handling ---
                        
                    } catch (error: any) {
+                        LogManager.error(this.componentName, `Error executing tool ${fullToolIdentifier}: ${error.message}`, error);
                        result.error = error.message || String(error);
                    }
                }
            } else {
-               result.error = `Tool '${toolIdentifier}' is not a managed tool.`;
+                // This case should ideally not happen if the map is built correctly
+               result.error = `Tool '${baseToolName}' (mapped to '${fullToolIdentifier}') is not a managed tool format.`;
+                LogManager.error(this.componentName, `Mapped tool identifier '${fullToolIdentifier}' lacks '@' separator.`);
            }
-           LogManager.debug(this.componentName, `Tool call result for ${toolIdentifier}:`, result);
+           LogManager.debug(this.componentName, `Tool call result for ${baseToolName}:`, result);
            toolResults.push(result);
        }
        return toolResults;
@@ -985,20 +1099,21 @@ export class MCPClient {
    * Filters tools by calling the dedicated embedding MCP server.
    */
   private async filterTools(query: string, history: ChatMessage[], allTools: SimpleTool[]): Promise<SimpleTool[]> {
-      const embeddingServerId = 'tool-matcher'; // <<<--- Make sure this matches your server config ID
+      const embeddingServerId = 'tools-matcher'; // <<<--- Make sure this matches your server config ID
       let rankedToolNames: string[] = [];
       LogManager.debug(this.componentName, `Entering filterTools. Query: ${query.substring(0,50)}..., History items: ${history.length}, All tools count: ${allTools.length}, Names: ${allTools.map(t=>t.name).join(', ')}`);
 
-      // Ensure the embedding server itself is running before attempting to call it
-      const serverStatusInfo = this.mcpServerManager.getServerStatus(embeddingServerId);
-      if (!serverStatusInfo || serverStatusInfo.status !== ServerStatus.Connected) { 
-          LogManager.warn(this.componentName, `Embedding server '${embeddingServerId}' is not connected (Status: ${serverStatusInfo?.status ?? 'Not Found'}). Skipping tool filtering via embedding server.`);
-          // Proceed without calling the server, default tools will be added later
+      // Wait for the embedding server to be connected
+      const isEmbeddingServerConnected = await this.waitForServerToConnect(embeddingServerId, 10000); // Wait up to 10 seconds
+
+      if (!isEmbeddingServerConnected) {
+          LogManager.warn(this.componentName, `Embedding server '${embeddingServerId}' did not connect in time or is not configured. Skipping tool filtering via embedding server.`);
+          // Proceed without calling the server, default tools will be added later if applicable
       } else if (allTools.length === 0) {
             LogManager.debug(this.componentName, "FilterTools: No tools available to filter (excluding embedding server).");
             // Skip calling the embedding server if there are no tools to rank
       } else {
-          // Prepare tool info for the embedding server
+          // Embedding server is connected, proceed with calling it
           const toolInfoForServer = allTools.map(t => ({
               name: t.name,
               description: typeof t.description === 'string' ? t.description : t.name 
@@ -1066,6 +1181,67 @@ export class MCPClient {
   
       LogManager.info(this.componentName, `FilterTools: Final list contains ${finalFilteredTools.length} tools.`);
       return finalFilteredTools;
+  }
+
+  /**
+   * Helper function to wait for a server to be connected using McpServerManager.onServerStatusChanged, with a timeout and UI status updates.
+   */
+  private async waitForServerToConnect(serverId: string, timeoutMs: number = 10000): Promise<boolean> {
+    const startTime = Date.now();
+    LogManager.info(this.componentName, `Waiting for server '${serverId}' to connect (timeout: ${timeoutMs}ms)...`);
+    ChatViewProvider.instance?.updateStatus(`Initializing ${serverId} service...`);
+
+    let serverStatusInfo = this.mcpServerManager.getServerStatus(serverId);
+    if (serverStatusInfo && serverStatusInfo.status === ServerStatus.Connected) {
+        LogManager.info(this.componentName, `Server '${serverId}' is already connected.`);
+        ChatViewProvider.instance?.updateStatus("");
+        return true;
+    }
+
+    return new Promise<boolean>((resolve) => {
+        let timeoutId: NodeJS.Timeout | null = null;
+        let pollIntervalId: NodeJS.Timeout | null = null;
+
+        const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (pollIntervalId) clearInterval(pollIntervalId);
+            this.mcpServerManager.removeListener('serverStatusChanged', statusChangeHandler);
+        };
+
+        const statusChangeHandler = (event: ServerStatusEvent) => {
+            if (event.serverId === serverId && event.status === ServerStatus.Connected) {
+                LogManager.info(this.componentName, `Server '${serverId}' connected via event.`);
+                cleanup();
+                ChatViewProvider.instance?.updateStatus("");
+                resolve(true);
+            }
+        };
+
+        timeoutId = setTimeout(() => {
+            LogManager.warn(this.componentName, `Timeout waiting for server '${serverId}' to connect.`);
+            cleanup();
+            ChatViewProvider.instance?.updateStatus(`Timeout initializing ${serverId}. Proceeding without it.`);
+            setTimeout(() => ChatViewProvider.instance?.updateStatus(""), 2000);
+            resolve(false);
+        }, timeoutMs);
+
+        this.mcpServerManager.on('serverStatusChanged', statusChangeHandler);
+
+        pollIntervalId = setInterval(() => {
+            if (Date.now() - startTime > timeoutMs) { // Should be cleared by main timeout
+                // cleanup(); // Already handled by main timeout
+                // resolve(false);
+                return;
+            }
+            const currentStatus = this.mcpServerManager.getServerStatus(serverId);
+            if (currentStatus && currentStatus.status === ServerStatus.Connected) {
+                LogManager.info(this.componentName, `Server '${serverId}' connected (polled).`);
+                cleanup();
+                ChatViewProvider.instance?.updateStatus("");
+                resolve(true);
+            }
+        }, 1000);
+    });
   }
 
   /** Cleans up resources */

@@ -73,7 +73,12 @@
         },
         "mcpServerManager.logLevel": {
           "type": "string",
-          "enum": ["DEBUG", "INFO", "WARN", "ERROR"],
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ],
           "default": "INFO",
           "description": "Controls the verbosity of logs sent to the MCP Output Channel. DEBUG provides the most detail."
         }

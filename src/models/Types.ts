@@ -78,10 +78,11 @@ export interface ModelResponse {
 // Update ChatMessage to handle different roles and content types
 export interface ChatMessage {
     role: 'user' | 'assistant' | 'tool' | 'bot'; // Use specific roles
-    content?: string; // Primary content for user/assistant
+    content?: string; // Primary content for user/assistant/tool
+    name?: string; // For role 'tool', the name of the tool that was called
     text?: string; // Keep for compatibility with 'bot' role messages in UI
-    tool_calls?: any[]; // For assistant requesting tools
-    tool_results?: any[]; // For tool results
+    tool_calls?: any[]; // For assistant requesting tools (array of { id, type, function: { name, arguments } })
+    tool_call_id?: string; // For role 'tool', to match the ID of the tool call from assistant
 }
 
 /**
@@ -171,9 +172,17 @@ export interface SimpleTool {
 
 // Represents a request from the LLM to call a specific tool (sent via SSE)
 export interface FunctionCallRequest {
-    tool_call_id: string; 
-    tool_name: string;
-    parameters: Record<string, any>;
+    // Fields seen from server notifications
+    tool_call_id?: string; 
+    tool_name?: string;
+    parameters?: Record<string, any>;
+
+    // Fields potentially received if LLM uses OpenAI format
+    id?: string; // Optional ID (OpenAI style)
+    function?: { // Optional function details (OpenAI style)
+        name: string;
+        arguments: string; // Note: arguments are typically a JSON string
+    };
 }
 
 // Represents the result of executing a tool call (sent back to server)
